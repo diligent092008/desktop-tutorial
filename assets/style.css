@@ -318,7 +318,36 @@ table.data.bulk tr.err td { background: #FFF1EC; }
 table.data.bulk tr.err .sticky { background: #FFF1EC; }
 table.data.bulk .err-msg { color: #A8331F; font-weight: 650; white-space: normal; }
 
+/* ── 조회기록 · 견적모음 ── */
+table.data.hist td { vertical-align: middle; }
+table.data.hist .left { text-align: left; }
+table.data.hist .wrap { white-space: normal; min-width: 160px; line-height: 1.4; }
+.snap-info { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+.snap-info b { color: var(--muted); font-weight: 700; margin-right: 4px; }
+.segmented .cnt { font-family: var(--font-display); font-size: 11px; opacity: .6; margin-left: 2px; }
+.qstatus { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+.qstatus::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.qstatus.s-1, .qstatus.s-0 { background: var(--bg-2); color: var(--ink-2); }
+.qstatus.s-2 { background: rgba(42, 157, 176, .15); color: #176E7C; }
+.qstatus.s-3 { background: rgba(79, 168, 100, .17); color: #2C7040; }
+.qstatus.s-4 { background: rgba(224, 71, 46, .12); color: #A8331F; }
+.qgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.qcard { text-align: left; border: 1px solid var(--line); background: var(--panel-2); border-radius: var(--radius); padding: 16px; cursor: pointer; display: flex; flex-direction: column; gap: 8px;
+  transition: transform .18s var(--ease), box-shadow .18s var(--ease), border-color .18s; animation: rise .4s var(--ease) both; animation-delay: calc(var(--i, 0) * 30ms); }
+.qcard:hover { transform: translateY(-2px); border-color: var(--line-strong); box-shadow: 0 12px 24px -16px rgba(40, 28, 10, .45); }
+.qcard .qname { font-weight: 800; font-size: 15.5px; letter-spacing: -0.02em; }
+.qcard .qclient { font-size: 13px; font-weight: 700; color: var(--orange); }
+.qcard .qroute { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+.qcard .qmemo { font-size: 12.5px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.qcard .qfoot { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); margin-top: auto; padding-top: 6px; border-top: 1px dashed var(--line); }
+.qedit { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; }
+.qmeta { font-size: 13px; color: var(--ink-2); display: flex; flex-direction: column; gap: 6px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; align-self: start; }
+.qmeta b { color: var(--muted); margin-right: 4px; }
+.qmeta .snap-info { flex-direction: column; gap: 6px; margin-top: 0; }
+textarea.input.memo { min-height: 90px; font-family: var(--font); font-size: 14px; }
+
 @media (max-width: 980px) {
+  .qedit { grid-template-columns: 1fr; }
   .bulk-grid { grid-template-columns: 1fr; gap: 8px; }
   .calc-grid, .admin-grid { grid-template-columns: 1fr; }
   .calc-grid > .card:first-child, .rail { position: static; }
@@ -331,7 +360,8 @@ table.data.bulk .err-msg { color: #A8331F; font-weight: 650; white-space: normal
   .topbar { position: static; }
   .topbar .row { padding: 10px 16px; gap: 10px; flex-wrap: wrap; }
   .nav { order: 3; width: 100%; }
-  .nav button { flex: 1; padding: 8px 6px; }
+  .nav { overflow-x: auto; }
+  .nav button { flex: 1 0 auto; padding: 8px 10px; }
   .milkrun > .row-between { padding: 18px 18px 0; }
   table.data.bulk .c1 { min-width: 150px; }
   .user-chip .name, .user-chip .role-badge { display: none; }

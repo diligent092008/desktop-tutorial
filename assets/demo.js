@@ -23,8 +23,11 @@
     tariff: joilDummyTariff(),
     keys: { kakao: false, opinet: false },
     users: [{ id: 'admin', name: '관리자(데모)', role: 'admin', active: true, mustChange: false, pw: 'demo1234', createdAt: today(), lastLogin: '' }],
-    logs: []
+    logs: [],
+    snaps: {},
+    quotes: []
   };
+  store.snaps = store.snaps || {}; store.quotes = store.quotes || [];
   store.settings = joilMergeSettings(store.settings);
   var sessions = loadSessions();
 
@@ -61,15 +64,40 @@
 
   function pubSettings() {
     var s = store.settings;
-    return { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, quoteFooter: s.quoteFooter, maxKm: s.maxKm };
+    return { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, retentionDays: s.snapshot.retentionDays, quoteFooter: s.quoteFooter, maxKm: s.maxKm };
   }
   function userList() {
     return store.users.map(function (u) { return { id: u.id, name: u.name, role: u.role, active: u.active, mustChange: u.mustChange, createdAt: u.createdAt, lastLogin: u.lastLogin }; });
   }
-  function addLog(me, from, to, km, note) {
-    store.logs.unshift({ at: today(), id: me.id, name: me.name, from: from, to: to, km: km, note: note });
-    store.logs = store.logs.slice(0, 200); save();
+  function addLog(me, from, to, km, note, recordId, type, count) {
+    store.logs.unshift({ at: today(), id: me.id, name: me.name, from: from, to: to, km: km, note: note, recordId: recordId || '', type: type || '', count: count || '' });
+    store.logs = store.logs.slice(0, 300); save();
   }
+  function snapMeta(me, type, count, out) {
+    var s = store.settings;
+    return { type: type, at: today(), user: { id: me.id, name: me.name }, count: count, baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip, tons: s.tons.map(function (t) { return t.name; }) };
+  }
+  function addSnap(id, meta, items) {
+    var sn = store.snaps[id] || (store.snaps[id] = { meta: meta, items: {} });
+    items.forEach(function (it) { var prev = sn.items[it.no]; if (!prev || it.result || !prev.result) sn.items[it.no] = it; });
+    save();
+  }
+  function readSnap(id) {
+    var sn = store.snaps[id]; if (!sn) return null;
+    return { meta: sn.meta, items: Object.keys(sn.items).map(function (k) { return sn.items[k]; }).sort(function (a, b) { return a.no - b.no; }) };
+  }
+  function findLog(id) { return store.logs.filter(function (l) { return l.recordId === id; })[0]; }
+  function quoteOf(me, id) {
+    var q = store.quotes.filter(function (x) { return x.id === id; })[0];
+    if (!q) fail('견적을 찾을 수 없습니다.');
+    if (me.role !== 'admin' && q.userId !== me.id) fail('본인 견적만 볼 수 있습니다.');
+    return q;
+  }
+  function quoteFields(f) {
+    var name = String(f.name || '').trim(); if (!name) fail('견적명을 입력하세요.');
+    return { name: name, client: String(f.client || '').trim(), memo: String(f.memo || ''), status: ['작성', '제출', '수주', '미수주'].indexOf(f.status) !== -1 ? f.status : '작성' };
+  }
+  function publicQuote(q) { var o = JSON.parse(JSON.stringify(q)); delete o.data; return o; }
   function quoteMany(pairs, req) {
     var s = store.settings;
     var baseTon = joilFindTon(s, req.baseTon) || joilFindTon(s, s.milkrun.baseTon) || s.tons[0];
@@ -113,14 +141,61 @@
       case 'quote':
         var one = quoteMany([{ origin: req.origin, dest: req.dest }], req).items[0];
         if (one.error) fail(one.error);
-        addLog(me, one.result.origin.address, one.result.dest.address, one.result.distanceKm, '데모');
-        return { result: one.result };
+        var rid = 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+        addLog(me, one.result.origin.address, one.result.dest.address, one.result.distanceKm, '', rid, '단건', 1);
+        var qo = quoteMany([{ origin: req.origin, dest: req.dest }], req);
+        addSnap(rid, snapMeta(me, '단건', 1, qo), [{ no: 1, origin: req.origin, dest: req.dest, result: one.result }]);
+        return { result: one.result, recordId: rid };
       case 'quoteBatch':
         if (!req.pairs || !req.pairs.length) fail('계산할 경로가 없습니다.');
         if (Number(req.batch && req.batch.count) > Number(s.batch.maxRows)) fail('대량 계산은 최대 ' + s.batch.maxRows + '건까지입니다.');
         var out = quoteMany(req.pairs, req);
-        if (req.batch && Number(req.batch.index) === 0) addLog(me, req.pairs[0].origin, '하차지 ' + req.batch.count + '곳', '', '대량 ' + req.batch.count + '건 (데모)');
+        var bt = req.batch || {};
+        if (Number(bt.index) === 0) addLog(me, req.pairs[0].origin, '하차지 ' + bt.count + '곳', '', '대량 ' + bt.count + '건', bt.id, '대량', bt.count);
+        if (bt.id) addSnap(bt.id, snapMeta(me, '대량', bt.count, out), req.pairs.map(function (p, i) { return { no: p.no || i + 1, origin: p.origin, dest: p.dest, result: out.items[i].result || null, error: out.items[i].error || null }; }));
+        out.recordId = bt.id || null;
         return out;
+      case 'history.list':
+        var since = Number(req.days) ? Date.now() - Number(req.days) * 86400000 : 0;
+        var who = me.role === 'admin' ? String(req.userId || '') : me.id;
+        var logs = store.logs.filter(function (l) {
+          if (since && Date.parse(l.at.replace(' ', 'T')) < since) return false;
+          if (who && l.id !== who) return false;
+          if (req.type && (l.type || '단건') !== req.type) return false;
+          if (req.q && (l.from + ' ' + l.to + ' ' + l.name + ' ' + l.id).indexOf(req.q) === -1) return false;
+          return true;
+        }).map(function (l) { var o = JSON.parse(JSON.stringify(l)); o.hasSnapshot = !!(l.recordId && store.snaps[l.recordId]); return o; });
+        var hr = { logs: logs };
+        if (me.role === 'admin') hr.users = store.users.map(function (u) { return { id: u.id, name: u.name }; });
+        return hr;
+      case 'history.get':
+        var lg = findLog(req.recordId); if (!lg) fail('기록을 찾을 수 없습니다.');
+        if (me.role !== 'admin' && lg.id !== me.id) fail('본인 기록만 볼 수 있습니다.');
+        var sn = readSnap(lg.recordId); if (!sn) fail('보관 기간이 지나 상세 내용이 삭제된 기록입니다.');
+        return { log: lg, meta: sn.meta, items: sn.items };
+      case 'quotes.save':
+        var sl = findLog(req.recordId); if (!sl) fail('저장할 조회 기록을 찾을 수 없습니다.');
+        if (me.role !== 'admin' && sl.id !== me.id) fail('본인 조회만 저장할 수 있습니다.');
+        var ss = readSnap(sl.recordId); if (!ss) fail('보관 기간이 지나 저장할 수 없는 기록입니다.');
+        var f = quoteFields(req), first = ss.items[0] || {}, isB = ss.meta.type === '대량';
+        var nq = { id: 'E' + Date.now().toString(36), savedAt: today(), userId: me.id, userName: me.name, name: f.name, client: f.client, memo: f.memo, status: f.status,
+          type: ss.meta.type, count: ss.items.length, from: isB ? first.origin : (first.result ? first.result.origin.address : first.origin),
+          to: isB ? '하차지 ' + ss.items.length + '곳' : (first.result ? first.result.dest.address : first.dest), recordId: sl.recordId, queriedAt: sl.at, updatedAt: today(), data: ss };
+        store.quotes.push(nq); save();
+        return { quote: publicQuote(nq) };
+      case 'quotes.list':
+        return { quotes: store.quotes.filter(function (q) { return me.role === 'admin' || q.userId === me.id; }).map(publicQuote).reverse() };
+      case 'quotes.get':
+        var gq = quoteOf(me, req.id);
+        return { quote: publicQuote(gq), meta: gq.data.meta, items: gq.data.items };
+      case 'quotes.update':
+        var uq = quoteOf(me, req.id), uf = quoteFields(Object.assign({}, uq, req.patch || {}));
+        uq.name = uf.name; uq.client = uf.client; uq.memo = uf.memo; uq.status = uf.status; uq.updatedAt = today(); save();
+        return { quote: publicQuote(uq) };
+      case 'quotes.delete':
+        var dq = quoteOf(me, req.id);
+        store.quotes = store.quotes.filter(function (q) { return q !== dq; }); save();
+        return {};
     }
     if (me.role !== 'admin') fail('관리자만 사용할 수 있습니다.');
     switch (req.action) {

@@ -40,7 +40,7 @@ function setup() {
   }
   if (!ss.getSheetByName(SHEET_LOG)) {
     var ls = ss.insertSheet(SHEET_LOG);
-    ls.getRange(1, 1, 1, 7).setValues([['일시', '아이디', '이름', '상차지', '하차지', '거리(km)', '비고']]).setFontWeight('bold');
+    ls.getRange(1, 1, 1, LOG_HEADER.length).setValues([LOG_HEADER]).setFontWeight('bold');
     ls.setFrozenRows(1);
   }
   if (!props.getProperty('SETTINGS')) {
@@ -106,11 +106,18 @@ function handle_(req) {
     case 'dieselPrice': return dieselPrice_();
     case 'quote': return quote_(session, req);
     case 'quoteBatch': return quoteBatch_(session, req);
+    case 'history.list': return historyList_(session, req);
+    case 'history.get': return historyGet_(session, req.recordId);
+    case 'quotes.save': return quotesSave_(session, req);
+    case 'quotes.list': return quotesList_(session, req);
+    case 'quotes.get': return quotesGet_(session, req.id);
+    case 'quotes.update': return quotesUpdate_(session, req.id, req.patch);
+    case 'quotes.delete': return quotesDelete_(session, req.id);
   }
 
   if (session.role !== 'admin') throw new Error('관리자만 사용할 수 있습니다.');
   switch (action) {
-    case 'admin.bootstrap': return { settings: getSettings_(), keys: keyStatus_(), users: listUsers_(), logs: getLogs_(200), cache: cacheInfo_() };
+    case 'admin.bootstrap': cleanupSnapshots_(); return { settings: getSettings_(), keys: keyStatus_(), users: listUsers_(), logs: getLogs_(200), cache: cacheInfo_() };
     case 'admin.getSettings': return { settings: getSettings_(), keys: keyStatus_() };
     case 'admin.saveSettings': return saveSettings_(req.settings);
     case 'admin.getTariff': return { tariff: readTariff_() };
@@ -292,6 +299,7 @@ function publicSettings_() {
     baseTon: s.milkrun.baseTon,
     roundTrip: s.milkrun.roundTrip,
     maxRows: s.batch.maxRows,
+    retentionDays: s.snapshot.retentionDays,
     quoteFooter: s.quoteFooter,
     maxKm: s.maxKm
   };
@@ -369,32 +377,336 @@ function quote_(session, req) {
   var out = quoteMany_([{ origin: originQ, dest: destQ }], req);
   var item = out.items[0];
   if (item.error) throw new Error(item.error);
-  log_(session, item.result.origin.address, item.result.dest.address, item.result.distanceKm, '');
-  return { result: item.result };
+  var recordId = newId_('R');
+  var r = item.result;
+  log_(session, r.origin.address, r.dest.address, r.distanceKm, '', recordId, '단건', 1);
+  saveSnapshotSafe_(recordId, session, snapshotMeta_(session, '단건', 1, out), [{ no: 1, origin: originQ, dest: destQ, result: r }]);
+  return { result: r, recordId: recordId };
 }
 
 /**
  * 대량 견적 (화면이 20건씩 나눠 여러 번 동시에 보냄)
- * req.pairs: [{ origin, dest }], req.batch: { index, total, count } — 첫 묶음일 때만 기록 1줄
+ * req.pairs: [{ no, origin, dest }], req.batch: { id, index, total, count } — 첫 묶음일 때만 기록 1줄
+ * 묶음마다 결과를 같은 기록ID로 스냅샷에 쌓아 둡니다.
  */
 function quoteBatch_(session, req) {
-  var pairs = (req.pairs || []).map(function (p) {
-    return { origin: joilNormalizeAddress(p.origin), dest: joilNormalizeAddress(p.dest) };
+  var pairs = (req.pairs || []).map(function (p, i) {
+    return { no: Number(p.no) || i + 1, origin: joilNormalizeAddress(p.origin), dest: joilNormalizeAddress(p.dest) };
   });
   if (!pairs.length) throw new Error('계산할 경로가 없습니다.');
   if (pairs.length > BATCH_CHUNK_MAX) throw new Error('한 번에 ' + BATCH_CHUNK_MAX + '건까지만 보낼 수 있습니다.');
   var s = getSettings_();
   var b = req.batch || {};
-  if (Number(b.count) > Number(s.batch.maxRows)) throw new Error('대량 계산은 최대 ' + s.batch.maxRows + '건까지입니다.');
+  var count = Number(b.count) || pairs.length;
+  if (count > Number(s.batch.maxRows)) throw new Error('대량 계산은 최대 ' + s.batch.maxRows + '건까지입니다.');
+  var recordId = /^[A-Za-z0-9_-]{6,40}$/.test(String(b.id || '')) ? String(b.id) : null;
 
   var out = quoteMany_(pairs, req);
   if (Number(b.index) === 0) {
     var origins = {};
     pairs.forEach(function (p) { origins[p.origin] = true; });
     var originText = Object.keys(origins).length === 1 ? pairs[0].origin : '여러 상차지';
-    log_(session, originText, '하차지 ' + (Number(b.count) || pairs.length) + '곳', '', '대량 ' + (Number(b.count) || pairs.length) + '건');
+    log_(session, originText, '하차지 ' + count + '곳', '', '대량 ' + count + '건', recordId || '', '대량', count);
   }
+  if (recordId) {
+    saveSnapshotSafe_(recordId, session, snapshotMeta_(session, '대량', count, out), pairs.map(function (p, i) {
+      var it = out.items[i];
+      return { no: p.no, origin: p.origin, dest: p.dest, result: it.result || null, error: it.error || null };
+    }));
+  }
+  out.recordId = recordId;
   return out;
+}
+
+/* ───────────── 조회기록 ───────────── */
+
+var LOG_HEADER = ['일시', '아이디', '이름', '상차지', '하차지', '거리(km)', '비고', '기록ID', '종류', '건수'];
+
+function logSheet_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_LOG);
+  if (sh && String(sh.getRange(1, 8).getValue()) !== '기록ID') {
+    sh.getRange(1, 1, 1, LOG_HEADER.length).setValues([LOG_HEADER]).setFontWeight('bold');
+  }
+  return sh;
+}
+
+function log_(session, from, to, km, note, recordId, type, count) {
+  var sh = logSheet_();
+  if (sh) sh.appendRow([now_(), session.id, session.name, from, to, km, note, recordId || '', type || '', count || '']);
+}
+
+function logRowToObj_(r) {
+  return { at: fmt_(r[0]), id: String(r[1]), name: String(r[2]), from: r[3], to: r[4], km: r[5], note: r[6], recordId: String(r[7] || ''), type: String(r[8] || ''), count: r[9] };
+}
+
+function getLogs_(limit) {
+  var sh = logSheet_();
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  var n = Math.min(limit, last - 1);
+  return sh.getRange(last - n + 1, 1, n, LOG_HEADER.length).getValues().reverse().map(logRowToObj_);
+}
+
+/** 조회기록 목록: 직원은 본인 것만, 관리자는 전체 (+사용자 필터) */
+function historyList_(session, req) {
+  cleanupSnapshots_();
+  var sh = logSheet_();
+  var last = sh.getLastRow();
+  var isAdmin = session.role === 'admin';
+  var days = Number(req.days) || 0;
+  var since = days ? Date.now() - days * 86400000 : 0;
+  var q = String(req.q || '').trim();
+  var who = isAdmin ? String(req.userId || '') : session.id;
+  var type = String(req.type || '');
+  var limit = Math.min(Number(req.limit) || 300, 1000);
+
+  var snapIds = snapshotIdSet_();
+  var out = [];
+  if (last >= 2) {
+    var values = sh.getRange(2, 1, last - 1, LOG_HEADER.length).getValues();
+    for (var i = values.length - 1; i >= 0 && out.length < limit; i--) {
+      var r = values[i];
+      var t = r[0] instanceof Date ? r[0].getTime() : Date.parse(String(r[0]).replace(' ', 'T') + '+09:00');
+      if (since && t < since) break; // 아래로 갈수록 오래된 기록
+      var o = logRowToObj_(r);
+      if (who && o.id !== who) continue;
+      if (type && (o.type || (o.note && /^대량/.test(o.note) ? '대량' : '단건')) !== type) continue;
+      if (q && (o.from + ' ' + o.to + ' ' + o.name + ' ' + o.id).indexOf(q) === -1) continue;
+      o.hasSnapshot = !!(o.recordId && snapIds[o.recordId]);
+      out.push(o);
+    }
+  }
+  var res = { logs: out };
+  if (isAdmin) res.users = listUsers_().map(function (u) { return { id: u.id, name: u.name }; });
+  return res;
+}
+
+function findLogByRecord_(recordId) {
+  var sh = logSheet_();
+  if (!recordId || sh.getLastRow() < 2) return null;
+  var hit = sh.getRange(2, 8, sh.getLastRow() - 1, 1).createTextFinder(recordId).matchEntireCell(true).findNext();
+  if (!hit) return null;
+  return logRowToObj_(sh.getRange(hit.getRow(), 1, 1, LOG_HEADER.length).getValues()[0]);
+}
+
+function historyGet_(session, recordId) {
+  var log = findLogByRecord_(String(recordId || ''));
+  if (!log) throw new Error('기록을 찾을 수 없습니다.');
+  if (session.role !== 'admin' && log.id !== session.id) throw new Error('본인 기록만 볼 수 있습니다.');
+  var snap = readPacked_(SHEET_SNAP, log.recordId);
+  if (!snap) throw new Error('보관 기간(' + getSettings_().snapshot.retentionDays + '일)이 지나 상세 내용이 삭제된 기록입니다.');
+  return { log: log, meta: snap.meta, items: snap.items };
+}
+
+/* ───────────── 스냅샷 (그때 결과 그대로 보관) ───────────── */
+/*
+ * 결과를 압축(gzip+base64)해서 시트 한 칸에 넣습니다. 한 칸 제한(5만 자)을 넘으면 나눠서 여러 줄로 저장.
+ * 스냅샷: 기록ID | 저장시각(ms) | 아이디 | 데이터       견적데이터: 견적ID | 저장시각 | 아이디 | 데이터
+ */
+
+var SHEET_SNAP = '스냅샷';
+var SHEET_QUOTES = '견적모음';
+var SHEET_QDATA = '견적데이터';
+var PACK_HEADER = ['ID', '저장시각', '아이디', '데이터'];
+var CELL_LIMIT = 45000;
+
+function newId_(prefix) {
+  return prefix + Utilities.formatDate(new Date(), TZ, 'yyMMddHHmmss') + Utilities.getUuid().replace(/-/g, '').slice(0, 5);
+}
+
+function packJson_(obj) {
+  var blob = Utilities.newBlob(JSON.stringify(obj), 'application/json');
+  return Utilities.base64Encode(Utilities.gzip(blob).getBytes());
+}
+
+function unpackJson_(s) {
+  var blob = Utilities.newBlob(Utilities.base64Decode(String(s)), 'application/x-gzip');
+  return JSON.parse(Utilities.ungzip(blob).getDataAsString('UTF-8'));
+}
+
+function snapshotMeta_(session, type, count, out) {
+  var s = getSettings_();
+  return {
+    type: type, at: now_(), user: { id: session.id, name: session.name }, count: count,
+    baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip,
+    tons: s.tons.map(function (t) { return t.name; })
+  };
+}
+
+/** items를 한 칸에 들어가는 크기로 나눠 [데이터문자열] 반환 */
+function packChunks_(meta, items) {
+  var packed = packJson_({ meta: meta, items: items });
+  if (packed.length <= CELL_LIMIT || items.length <= 1) return [packed];
+  var half = Math.ceil(items.length / 2);
+  return packChunks_(meta, items.slice(0, half)).concat(packChunks_(meta, items.slice(half)));
+}
+
+function appendPacked_(sheetName, id, userId, meta, items) {
+  var sh = cacheSheet_(sheetName, PACK_HEADER);
+  var now = Date.now();
+  var rows = packChunks_(meta, items).map(function (d) { return [id, now, userId, d]; });
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    sh.getRange(sh.getLastRow() + 1, 1, rows.length, PACK_HEADER.length).setValues(rows);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 스냅샷 저장이 실패해도 견적 계산 결과는 그대로 돌려줍니다. */
+function saveSnapshotSafe_(recordId, session, meta, items) {
+  try { appendPacked_(SHEET_SNAP, recordId, session.id, meta, items); } catch (e) { Logger.log('스냅샷 저장 실패: ' + e); }
+}
+
+function packedRows_(sheetName, id) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(id).matchEntireCell(true).findAll().map(function (rg) { return rg.getRow(); });
+}
+
+/** 같은 ID로 나뉘어 저장된 줄을 합칩니다. 같은 번호는 나중 것(재계산 성공분)이 우선. */
+function readPacked_(sheetName, id) {
+  var rows = packedRows_(sheetName, id);
+  if (!rows.length) return null;
+  var sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
+  var meta = null, byNo = {};
+  rows.forEach(function (row) {
+    var d = unpackJson_(sh.getRange(row, 4).getValue());
+    meta = meta || d.meta;
+    d.items.forEach(function (it) {
+      var prev = byNo[it.no];
+      if (!prev || it.result || !prev.result) byNo[it.no] = it;
+    });
+  });
+  var items = Object.keys(byNo).map(function (k) { return byNo[k]; }).sort(function (a, b) { return a.no - b.no; });
+  return { meta: meta, items: items };
+}
+
+function snapshotIdSet_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SNAP);
+  var set = {};
+  if (!sh || sh.getLastRow() < 2) return set;
+  sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues().forEach(function (r) { set[r[0]] = true; });
+  return set;
+}
+
+/** 보관 기간이 지난 스냅샷 삭제 (하루 한 번만 실제로 검사) */
+function cleanupSnapshots_() {
+  var props = PropertiesService.getScriptProperties();
+  var lastRun = Number(props.getProperty('SNAP_CLEAN_AT') || 0);
+  if (Date.now() - lastRun < 86400000) return;
+  props.setProperty('SNAP_CLEAN_AT', String(Date.now()));
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_SNAP);
+  if (!sh || sh.getLastRow() < 2) return;
+  var cutoff = Date.now() - Number(getSettings_().snapshot.retentionDays || 90) * 86400000;
+  var times = sh.getRange(2, 2, sh.getLastRow() - 1, 1).getValues();
+  var n = 0;
+  while (n < times.length && Number(times[n][0]) < cutoff) n++;
+  if (n) sh.deleteRows(2, n);
+}
+
+/* ───────────── 견적모음 ───────────── */
+
+var QUOTE_HEADER = ['견적ID', '저장일', '아이디', '이름', '견적명', '거래처', '메모', '상태', '종류', '건수', '상차지', '하차지', '원본기록ID', '조회일', '수정일'];
+var QUOTE_STATUS = ['작성', '제출', '수주', '미수주'];
+
+function quotesSheet_() { return cacheSheet_(SHEET_QUOTES, QUOTE_HEADER); }
+
+function quoteRowToObj_(r) {
+  return {
+    id: String(r[0]), savedAt: fmt_(r[1]), userId: String(r[2]), userName: String(r[3]), name: String(r[4]), client: String(r[5]),
+    memo: String(r[6]), status: String(r[7]), type: String(r[8]), count: r[9], from: String(r[10]), to: String(r[11]),
+    recordId: String(r[12]), queriedAt: String(r[13]), updatedAt: fmt_(r[14])
+  };
+}
+
+function findQuote_(id) {
+  var sh = quotesSheet_();
+  if (!id || sh.getLastRow() < 2) return null;
+  var hit = sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(String(id)).matchEntireCell(true).findNext();
+  if (!hit) return null;
+  return { row: hit.getRow(), data: quoteRowToObj_(sh.getRange(hit.getRow(), 1, 1, QUOTE_HEADER.length).getValues()[0]) };
+}
+
+function checkQuoteFields_(f) {
+  var name = String(f.name || '').trim();
+  if (!name) throw new Error('견적명을 입력하세요.');
+  if (name.length > 100) throw new Error('견적명은 100자 이내로 입력하세요.');
+  var status = QUOTE_STATUS.indexOf(f.status) !== -1 ? f.status : '작성';
+  return { name: name, client: String(f.client || '').trim().slice(0, 100), memo: String(f.memo || '').slice(0, 2000), status: status };
+}
+
+function quotesSave_(session, req) {
+  var log = findLogByRecord_(String(req.recordId || ''));
+  if (!log) throw new Error('저장할 조회 기록을 찾을 수 없습니다.');
+  if (session.role !== 'admin' && log.id !== session.id) throw new Error('본인 조회만 저장할 수 있습니다.');
+  var snap = readPacked_(SHEET_SNAP, log.recordId);
+  if (!snap) throw new Error('보관 기간이 지나 저장할 수 없는 기록입니다.');
+  var f = checkQuoteFields_(req);
+  var id = newId_('E');
+  appendPacked_(SHEET_QDATA, id, session.id, snap.meta, snap.items);
+  var isBatch = snap.meta.type === '대량';
+  var first = snap.items[0] || {};
+  var origins = {};
+  snap.items.forEach(function (it) { origins[it.origin] = true; });
+  var from = isBatch ? (Object.keys(origins).length === 1 ? first.origin : '여러 상차지') : (first.result ? first.result.origin.address : first.origin);
+  var to = isBatch ? '하차지 ' + snap.items.length + '곳' : (first.result ? first.result.dest.address : first.dest);
+  var now = now_();
+  quotesSheet_().appendRow([id, now, session.id, session.name, f.name, f.client, f.memo, f.status, snap.meta.type, snap.items.length, from, to, log.recordId, log.at, now]);
+  return { quote: findQuote_(id).data };
+}
+
+function quotesList_(session, req) {
+  var sh = quotesSheet_();
+  var isAdmin = session.role === 'admin';
+  var q = String(req.q || '').trim();
+  var out = [];
+  if (sh.getLastRow() >= 2) {
+    sh.getRange(2, 1, sh.getLastRow() - 1, QUOTE_HEADER.length).getValues().forEach(function (r) {
+      var o = quoteRowToObj_(r);
+      if (!isAdmin && o.userId !== session.id) return;
+      if (q && (o.name + ' ' + o.client + ' ' + o.memo + ' ' + o.from + ' ' + o.to + ' ' + o.userName).indexOf(q) === -1) return;
+      out.push(o);
+    });
+  }
+  return { quotes: out.reverse() };
+}
+
+function quoteAccess_(session, id) {
+  var found = findQuote_(id);
+  if (!found) throw new Error('견적을 찾을 수 없습니다.');
+  if (session.role !== 'admin' && found.data.userId !== session.id) throw new Error('본인 견적만 볼 수 있습니다.');
+  return found;
+}
+
+function quotesGet_(session, id) {
+  var found = quoteAccess_(session, id);
+  var data = readPacked_(SHEET_QDATA, found.data.id);
+  if (!data) throw new Error('견적 데이터가 없습니다.');
+  return { quote: found.data, meta: data.meta, items: data.items };
+}
+
+function quotesUpdate_(session, id, patch) {
+  var found = quoteAccess_(session, id);
+  var f = checkQuoteFields_(Object.assign({}, found.data, patch || {}));
+  quotesSheet_().getRange(found.row, 5, 1, 4).setValues([[f.name, f.client, f.memo, f.status]]);
+  quotesSheet_().getRange(found.row, 15).setValue(now_());
+  return { quote: findQuote_(id).data };
+}
+
+function quotesDelete_(session, id) {
+  var found = quoteAccess_(session, id);
+  var dsh = SpreadsheetApp.getActive().getSheetByName(SHEET_QDATA);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    packedRows_(SHEET_QDATA, found.data.id).sort(function (a, b) { return b - a; }).forEach(function (row) { dsh.deleteRow(row); });
+    quotesSheet_().deleteRow(findQuote_(id).row);
+  } finally {
+    lock.releaseLock();
+  }
+  return {};
 }
 
 /** 공통: 주소 → 좌표 → 경로 → 계산. 한 건이 실패해도 나머지는 계속합니다. */
@@ -434,20 +746,6 @@ function quoteMany_(pairs, req) {
     return { result: result };
   });
   return { items: items, diesel: diesel, baseTon: baseTon.name };
-}
-
-function log_(session, from, to, km, note) {
-  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_LOG);
-  if (sh) sh.appendRow([now_(), session.id, session.name, from, to, km, note]);
-}
-
-function getLogs_(limit) {
-  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_LOG);
-  var last = sh.getLastRow();
-  if (last < 2) return [];
-  var n = Math.min(limit, last - 1);
-  var values = sh.getRange(last - n + 1, 1, n, 7).getValues().reverse();
-  return values.map(function (r) { return { at: fmt_(r[0]), id: r[1], name: r[2], from: r[3], to: r[4], km: r[5], note: r[6] }; });
 }
 
 /* ───────────── 영구 캐시 (시트) ───────────── */

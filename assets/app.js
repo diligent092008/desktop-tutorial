@@ -12,6 +12,8 @@
     pub: null,
     view: 'calc',
     calc: { origin: '', dest: '', dieselMode: null, dieselPrice: '', baseTon: null, tons: null, result: null },
+    hist: { days: 30, type: '', userId: '', q: '', logs: null, users: null, detail: null, detailData: null },
+    quotes: { q: '', status: '', list: null, detail: null, detailData: null },
     bulk: { mode: 'one', origin: '', dests: '', pairsText: '', results: [], running: false, cancel: false, page: 0, sort: 'no', search: '', filter: 'all', detail: true, meta: null, opts: null },
     admin: { tab: 'basic', settings: null, keys: null, tariff: null, tariffDirty: false, settingsDirty: false, page: 0, users: null, logs: null }
   };
@@ -47,7 +49,7 @@
    * - 조회성 요청(READ)은 오류·지연 시 1번 자동 재시도, 같은 요청이 동시에 겹치면 하나로 합침
    * - 저장·변경 요청은 중복 실행을 막기 위해 재시도하지 않음
    */
-  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo'];
+  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get'];
   var TIMEOUT_MS = 25000;
   var inflight = {};
 
@@ -185,12 +187,15 @@
         return /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c;
       }).join(',');
     }).join('\r\n');
-    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    saveBlob(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }), filename);
+  }
+
+  function saveBlob(blob, filename) {
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
   }
 
   function today() {
@@ -205,7 +210,10 @@
     state.admin = { tab: 'basic', loaded: false, settings: null, keys: null, tariff: null, tariffDirty: false, settingsDirty: false, page: 0, users: null, logs: null, cache: null };
     state.calc.result = null;
     state.calc.baseTon = null;
-    state.bulk.results = []; state.bulk.meta = null; state.bulk.cancel = true;
+    state.bulk.results = []; state.bulk.meta = null; state.bulk.cancel = true; state.bulk.recordId = null;
+    state.calc.recordId = null;
+    state.hist = { days: 30, type: '', userId: '', q: '', logs: null, users: null, detail: null, detailData: null };
+    state.quotes = { q: '', status: '', list: null, detail: null, detailData: null };
     storage('del', 'joil-token');
   }
 
@@ -234,6 +242,8 @@
       '<nav class="nav">' +
       '<button data-view="calc" class="' + (state.view === 'calc' ? 'on' : '') + '">단건 계산</button>' +
       '<button data-view="bulk" class="' + (state.view === 'bulk' ? 'on' : '') + '">대량 계산</button>' +
+      '<button data-view="history" class="' + (state.view === 'history' ? 'on' : '') + '">조회기록</button>' +
+      '<button data-view="quotes" class="' + (state.view === 'quotes' ? 'on' : '') + '">견적모음</button>' +
       (state.user.role === 'admin' ? '<button data-view="admin" class="' + (state.view === 'admin' ? 'on' : '') + '">관리자</button>' : '') +
       '</nav><div class="spacer"></div>' +
       '<div class="user-chip">' + (DEMO ? '<span class="badge region">데모</span>' : '') +
@@ -248,6 +258,12 @@
       b.onclick = function () {
         if (state.view === 'admin' && b.dataset.view !== 'admin' && (state.admin.tariffDirty || state.admin.settingsDirty) &&
           !confirm('저장하지 않은 관리자 변경사항이 있습니다. 이동할까요? (변경사항은 화면에 남아 있습니다)')) return;
+        // 같은 메뉴를 다시 누르면 상세 화면에서 목록으로
+        if (state.view === b.dataset.view) {
+          if (state.view === 'history') { state.hist.detail = null; state.hist.logs = null; }
+          if (state.view === 'quotes') { state.quotes.detail = null; state.quotes.list = null; }
+        }
+        if (b.dataset.view === 'history' && state.view !== 'history') state.hist.logs = null;
         state.view = b.dataset.view; render();
       };
     });
@@ -259,6 +275,8 @@
 
     if (state.view === 'admin' && state.user.role === 'admin') renderAdmin();
     else if (state.view === 'bulk') renderBulk();
+    else if (state.view === 'history') renderHistory();
+    else if (state.view === 'quotes') renderQuotes();
     else renderCalc();
   }
 
@@ -415,7 +433,9 @@
         });
         X.utils.book_append_sheet(wb, ws, sh.name);
       });
-      X.writeFile(wb, filename);
+      // writeFile 대신 직접 내려받기 링크를 만들어 파일 이름이 확실히 적용되도록
+      var data = X.write(wb, { bookType: 'xlsx', type: 'array' });
+      saveBlob(new Blob([data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), filename);
     });
   }
 
@@ -455,7 +475,7 @@
       api('quote', Object.assign({ origin: c.origin, dest: c.dest }, quoteOptions()))
         .then(function (r) {
           if (!r.result.milkrun) throw new Error('서버 코드가 예전 버전입니다. 관리자가 Apps Script 코드를 최신으로 바꾸고 새 버전으로 배포해야 합니다. (SETUP.md "업데이트가 나왔을 때")');
-          c.result = r.result; renderResult(true);
+          c.result = r.result; c.recordId = r.recordId || null; renderResult(true);
         })
         .catch(function (err) { toast(err.message, 'err'); })
         .then(function () { busy(btn, false); });
@@ -489,9 +509,17 @@
   }
 
   function renderResult(animate) {
-    var r = state.calc.result;
-    var sel = state.calc.tons;
-    var rows = r.rows.filter(function (row) { return sel.indexOf(row.ton) !== -1; });
+    renderSingleView(state.calc.result, $('#result'), {
+      tons: state.calc.tons, animate: animate, recordId: state.calc.recordId, emptyHint: '왼쪽에서 톤수를 골라 주세요.'
+    });
+  }
+
+  /**
+   * 단건 결과 화면 (계산 직후 · 조회기록 상세 · 견적모음 상세 공용)
+   * opts: { tons, animate, recordId(있으면 "견적으로 저장" 버튼), emptyHint }
+   */
+  function renderSingleView(r, box, opts) {
+    var rows = r.rows.filter(function (row) { return opts.tons.indexOf(row.ton) !== -1; });
     var regionHtml = r.regionHits.length
       ? r.regionHits.map(function (h) { return '<span class="badge region">' + esc(h.point.replace('지', '')) + '·' + esc(h.name) + ' +' + won(h.amount) + '</span>'; }).join('')
       : '<span class="muted">없음</span>';
@@ -517,7 +545,8 @@
       html +=
         '<div class="card" style="--i:1;margin-top:16px">' +
         '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><div><div class="eyebrow">Quote · 톤수별 견적</div><h3>' + rows.length + '개 톤수</h3></div>' +
-        '<div class="actions"><button class="btn btn-sm" id="copyQuote">회신 문구 복사</button><button class="btn btn-sm" id="xlsxQuote">엑셀 저장</button></div></div>' +
+        '<div class="actions">' + (opts.recordId ? '<button class="btn btn-sm btn-primary" data-act="saveQuote">견적으로 저장</button>' : '') +
+        '<button class="btn btn-sm" data-act="copy">회신 문구 복사</button><button class="btn btn-sm" data-act="xlsx">엑셀 저장</button></div></div>' +
         (rows.length ? '<div class="table-wrap"><table class="data"><thead><tr>' +
           '<th>톤수</th><th>타리프</th><th>지역할증</th><th>하행할증</th><th>합계</th>' +
           '</tr></thead><tbody>' + rows.map(function (row, i) {
@@ -527,18 +556,18 @@
               '<td class="num">' + won(row.downhill) + '</td>' +
               '<td class="total"><span class="num" data-total="' + row.total + '">' + won(row.total) + '</span></td></tr>';
           }).join('') + '</tbody></table></div>'
-          : '<p class="muted" style="margin:0">선택된 톤수가 없습니다. 왼쪽에서 톤수를 골라 주세요.</p>') +
+          : '<p class="muted" style="margin:0">선택된 톤수가 없습니다. ' + esc(opts.emptyHint || '') + '</p>') +
         '<p class="hint" style="margin:14px 0 0">합계 = 타리프 + 지역할증 + 하행할증 (금액 단위 반올림 적용) · 유류비·통행료는 아래 밀크런에 따로 표시</p>' +
         '</div>';
     }
     html += '<div style="margin-top:16px">' + milkrunCard(r, 2) + '</div>';
 
-    var box = $('#result');
     box.innerHTML = html;
-    if (!animate) $$('.card, tr', box).forEach(function (el) { el.style.animation = 'none'; });
+    if (!opts.animate) $$('.card, tr', box).forEach(function (el) { el.style.animation = 'none'; });
     else $$('[data-total]', box).forEach(function (el) { countUp(el, Number(el.dataset.total)); });
 
-    var copyBtn = $('#copyQuote'), xBtn = $('#xlsxQuote');
+    var copyBtn = $('[data-act="copy"]', box), xBtn = $('[data-act="xlsx"]', box), sBtn = $('[data-act="saveQuote"]', box);
+    if (sBtn) sBtn.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }); };
     if (copyBtn) copyBtn.onclick = function () {
       copyText(quoteText(r, rows)).then(function () { toast('회신 문구를 복사했습니다.'); });
     };
@@ -551,7 +580,7 @@
       var mr = [['밀크런 기준 톤수', m.ton], ['편도/왕복', m.roundTrip ? '왕복' : '편도'], ['운행 거리(km)', m.distanceKm], ['연비(km/L)', m.kmPerL],
         ['경유가(원/L)', m.dieselPrice], ['유류비', m.fuel], ['통행료(' + m.tollClass + '종)', m.toll], ['유류비+통행료', m.total]];
       busy(xBtn, true, '만드는 중…');
-      downloadXlsx('조일ver1_견적_' + today() + '.xlsx', [
+      downloadXlsx('조일ver1_견적_' + (opts.fileDate || today()) + '.xlsx', [
         { name: '톤수별 견적', rows: [head].concat(body), widths: [34, 34, 9, 10, 6, 26, 7, 11, 10, 10, 11] },
         { name: '밀크런', rows: [['항목', '값']].concat(mr), widths: [18, 14] }
       ]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(xBtn, false); });
@@ -671,6 +700,7 @@
     b.page = 0; b.search = ''; b.sort = 'no';
     b.opts = quoteOptions();
     b.meta = null;
+    b.recordId = 'B' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     runBulk(b.results.slice(), true);
   }
 
@@ -709,8 +739,8 @@
       var idx = next++;
       var chunk = chunks[idx];
       var payload = Object.assign({
-        pairs: chunk.map(function (r) { return { origin: r.origin, dest: r.dest }; }),
-        batch: { index: isNew ? idx : -1, total: chunks.length, count: total }
+        pairs: chunk.map(function (r) { return { no: r.no, origin: r.origin, dest: r.dest }; }),
+        batch: { id: b.recordId, index: isNew ? idx : -1, total: chunks.length, count: b.results.length }
       }, b.opts);
       return api('quoteBatch', payload).then(function (res) {
         b.meta = b.meta || { diesel: res.diesel, baseTon: res.baseTon };
@@ -747,8 +777,7 @@
     });
   }
 
-  function bulkView() {
-    var b = state.bulk;
+  function bulkView(b) {
     var q = (b.search || '').trim();
     var list = b.results.filter(function (r) {
       if (b.filter === 'fail' && r.status === 'ok') return false;
@@ -768,26 +797,38 @@
   }
 
   function renderBulkResult(animate) {
-    var b = state.bulk;
     var box = $('#bulkResult');
     if (!box) return;
+    renderBulkView(state.bulk, box, {
+      live: true, animate: animate, tons: state.calc.tons, roundTrip: state.pub.roundTrip, recordId: state.bulk.recordId,
+      emptyHint: '표시할 톤수를 위에서 골라 주세요.'
+    });
+  }
+
+  /**
+   * 대량 결과 표 (계산 직후 · 조회기록 상세 · 견적모음 상세 공용)
+   * b: { results, meta, page, sort, search, filter, detail, running }
+   * opts: { live(실패 재계산 가능), animate, tons, roundTrip, recordId, emptyHint, fileDate, who }
+   */
+  function renderBulkView(b, box, opts) {
+    var again = function () { renderBulkView(b, box, Object.assign({}, opts, { animate: false })); };
     var all = b.results;
     var okRows = all.filter(function (r) { return r.status === 'ok'; });
     var fail = all.length - okRows.length;
     var avg = okRows.length ? Math.round(okRows.reduce(function (s, r) { return s + r.result.distanceKm; }, 0) / okRows.length) : 0;
-    var tons = state.calc.tons;
+    var tons = opts.tons;
     var detail = b.detail !== false;
-    var list = bulkView();
+    var list = bulkView(b);
     var pages = Math.max(1, Math.ceil(list.length / BULK_PAGE));
     if (b.page >= pages) b.page = 0;
     var pageRows = list.slice(b.page * BULK_PAGE, (b.page + 1) * BULK_PAGE);
     var meta = b.meta || {};
-    var mrTon = meta.baseTon || state.calc.baseTon;
+    var mrTon = meta.baseTon || '';
     var perTon = detail ? 3 : 1;
 
     var head1 = '<tr><th class="sticky c0" rowspan="2">#</th><th class="sticky c1" rowspan="2">하차지</th><th rowspan="2" class="left">상차지</th>' +
       '<th rowspan="2">거리</th><th rowspan="2" class="left">방향</th><th rowspan="2" class="left">지역할증</th>' +
-      '<th colspan="3" class="grp mr">밀크런 · ' + esc(mrTon) + ' ' + (state.pub.roundTrip ? '왕복' : '편도') + '</th>' +
+      '<th colspan="3" class="grp mr">밀크런 · ' + esc(mrTon) + ' ' + (opts.roundTrip ? '왕복' : '편도') + '</th>' +
       tons.map(function (t) { return '<th colspan="' + perTon + '" class="grp">' + esc(t) + '</th>'; }).join('') + '</tr>';
     var head2 = '<tr><th class="mr">유류비</th><th class="mr">통행료</th><th class="mr">합계</th>' +
       tons.map(function () { return detail ? '<th>타리프</th><th>하행</th><th>합계</th>' : '<th>합계</th>'; }).join('') + '</tr>';
@@ -825,38 +866,41 @@
       '<div class="row-between" style="flex-wrap:wrap;margin-bottom:14px"><div><div class="eyebrow">Result · 대량 결과</div>' +
       '<h3>' + won(all.length) + '건 · <span style="color:var(--green)">성공 ' + won(okRows.length) + '</span>' + (fail ? ' · <span style="color:var(--red)">실패 ' + won(fail) + '</span>' : '') + '</h3>' +
       '<p class="muted small" style="margin:4px 0 0">평균 거리 ' + won(avg) + 'km' + (meta.diesel ? ' · 경유가 ' + won(meta.diesel.price) + '원/L (' + esc(meta.diesel.source) + ')' : '') + ' · 지역할증은 톤수별 합계에 포함</p></div>' +
-      '<div class="actions">' + (fail && !b.running ? '<button class="btn btn-sm btn-danger" id="bRetry">실패 ' + won(fail) + '건 다시 계산</button>' : '') +
-      '<button class="btn btn-sm btn-primary" id="bXlsx"' + (okRows.length ? '' : ' disabled') + '>엑셀 다운로드</button></div></div>' +
+      '<div class="actions">' + (opts.live && fail && !b.running ? '<button class="btn btn-sm btn-danger" data-act="retry">실패 ' + won(fail) + '건 다시 계산</button>' : '') +
+      (opts.recordId && !b.running ? '<button class="btn btn-sm" data-act="saveQuote">견적으로 저장</button>' : '') +
+      '<button class="btn btn-sm btn-primary" data-act="xlsx"' + (okRows.length ? '' : ' disabled') + '>엑셀 다운로드</button></div></div>' +
       '<div class="toolbar">' +
-      '<input class="input input-sm" id="bSearch" placeholder="주소 검색" value="' + esc(b.search || '') + '" style="max-width:240px">' +
-      '<select class="input input-sm" id="bSort" style="width:auto"><option value="no">입력 순서</option><option value="kmAsc">거리 가까운 순</option><option value="kmDesc">거리 먼 순</option><option value="mrDesc">밀크런 금액 큰 순</option></select>' +
-      '<div class="segmented" id="bFilter"><button type="button" data-f="all" class="' + (b.filter !== 'fail' ? 'on' : '') + '">전체</button><button type="button" data-f="fail" class="' + (b.filter === 'fail' ? 'on' : '') + '">실패만</button></div>' +
-      '<label class="toggle" style="margin-left:auto"><input type="checkbox" id="bDetail"' + (detail ? ' checked' : '') + '><span class="track"></span>톤수별 상세</label>' +
+      '<input class="input input-sm" data-el="search" placeholder="주소 검색" value="' + esc(b.search || '') + '" style="max-width:240px">' +
+      '<select class="input input-sm" data-el="sort" style="width:auto"><option value="no">입력 순서</option><option value="kmAsc">거리 가까운 순</option><option value="kmDesc">거리 먼 순</option><option value="mrDesc">밀크런 금액 큰 순</option></select>' +
+      '<div class="segmented" data-el="filter"><button type="button" data-f="all" class="' + (b.filter !== 'fail' ? 'on' : '') + '">전체</button><button type="button" data-f="fail" class="' + (b.filter === 'fail' ? 'on' : '') + '">실패만</button></div>' +
+      '<label class="toggle" style="margin-left:auto"><input type="checkbox" data-el="detail"' + (detail ? ' checked' : '') + '><span class="track"></span>톤수별 상세</label>' +
       '</div>' +
-      (tons.length ? '' : '<p class="hint" style="margin:0 0 10px">표시할 톤수를 위에서 골라 주세요.</p>') +
+      (tons.length ? '' : '<p class="hint" style="margin:0 0 10px">' + esc(opts.emptyHint || '') + '</p>') +
       '<div class="bulk-table"><table class="data bulk"><thead>' + head1 + head2 + '</thead><tbody>' + (body || '<tr><td colspan="' + colCount + '" class="left muted" style="padding:24px">조건에 맞는 결과가 없습니다.</td></tr>') + '</tbody></table></div>' +
       (pages > 1 ? '<div class="pager" style="margin-top:12px">' + Array.apply(null, { length: pages }).map(function (_, p) {
         return '<button data-p="' + p + '" class="' + (p === b.page ? 'on' : '') + '">' + (p * BULK_PAGE + 1) + '–' + Math.min(list.length, (p + 1) * BULK_PAGE) + '</button>';
       }).join('') + '</div>' : '') +
       '</div>';
 
-    if (!animate) $$('.card', box).forEach(function (el) { el.style.animation = 'none'; });
-    $('#bSort').value = b.sort || 'no';
-    $('#bSort').onchange = function () { b.sort = this.value; b.page = 0; renderBulkResult(); };
+    if (!opts.animate) $$('.card', box).forEach(function (el) { el.style.animation = 'none'; });
+    var sortEl = $('[data-el="sort"]', box);
+    sortEl.value = b.sort || 'no';
+    sortEl.onchange = function () { b.sort = this.value; b.page = 0; again(); };
     var st;
-    $('#bSearch').oninput = function () {
+    $('[data-el="search"]', box).oninput = function () {
       var v = this.value; clearTimeout(st);
-      st = setTimeout(function () { b.search = v; b.page = 0; renderBulkResult(); var el = $('#bSearch'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
+      st = setTimeout(function () { b.search = v; b.page = 0; again(); var el = $('[data-el="search"]', box); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
     };
-    $$('#bFilter button').forEach(function (x) { x.onclick = function () { b.filter = x.dataset.f; b.page = 0; renderBulkResult(); }; });
-    $('#bDetail').onchange = function () { b.detail = this.checked; renderBulkResult(); };
-    $$('.pager button', box).forEach(function (x) { x.onclick = function () { b.page = Number(x.dataset.p); renderBulkResult(); box.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
-    var rt = $('#bRetry'); if (rt) rt.onclick = retryFailed;
-    $('#bXlsx').onclick = function () { exportBulk(this); };
+    $$('[data-el="filter"] button', box).forEach(function (x) { x.onclick = function () { b.filter = x.dataset.f; b.page = 0; again(); }; });
+    $('[data-el="detail"]', box).onchange = function () { b.detail = this.checked; again(); };
+    $$('.pager button', box).forEach(function (x) { x.onclick = function () { b.page = Number(x.dataset.p); again(); box.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
+    var rt = $('[data-act="retry"]', box); if (rt) rt.onclick = retryFailed;
+    var sv = $('[data-act="saveQuote"]', box); if (sv) sv.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }); };
+    $('[data-act="xlsx"]', box).onclick = function () { exportBulk(this, b, opts); };
   }
 
-  function exportBulk(btn) {
-    var b = state.bulk, tons = state.calc.tons, meta = b.meta || {};
+  function exportBulk(btn, b, opts) {
+    var tons = opts.tons, meta = b.meta || {};
     var head = ['No', '상차지(입력)', '하차지(입력)', '상차지(찾은 주소)', '하차지(찾은 주소)', '거리(km)', '요금기준(km)', '방향', '하행할증(%)', '지역할증 내역', '지역할증 합계',
       '밀크런 기준톤수', '편도/왕복', '밀크런 거리(km)', '경유가(원/L)', '유류비', '통행료', '유류비+통행료'];
     tons.forEach(function (t) { head.push(t + ' 타리프', t + ' 하행할증', t + ' 합계'); });
@@ -881,16 +925,313 @@
     });
     var widths = [5, 28, 28, 30, 30, 9, 10, 6, 9, 26, 10, 12, 8, 12, 10, 10, 10, 12].concat(tons.reduce(function (a) { return a.concat([11, 10, 11]); }, [])).concat([30]);
     var ok = b.results.filter(function (r) { return r.status === 'ok'; }).length;
-    var cond = [['항목', '값'], ['조회 일시', new Date().toLocaleString('ko-KR')], ['조회자', state.user.name + ' (' + state.user.id + ')'],
+    var cond = [['항목', '값'], ['조회 일시', opts.when || new Date().toLocaleString('ko-KR')], ['조회자', opts.who || (state.user.name + ' (' + state.user.id + ')')],
       ['전체 건수', b.results.length], ['성공', ok], ['실패', b.results.length - ok],
-      ['밀크런 기준 톤수', meta.baseTon || ''], ['편도/왕복', state.pub.roundTrip ? '왕복' : '편도'],
+      ['밀크런 기준 톤수', meta.baseTon || ''], ['편도/왕복', opts.roundTrip ? '왕복' : '편도'],
       ['경유가(원/L)', meta.diesel ? meta.diesel.price : ''], ['경유가 출처', meta.diesel ? meta.diesel.source : ''],
       ['비고', '톤수별 합계 = 타리프 + 지역할증 + 하행할증 / 유류비·통행료는 밀크런 기준 톤수로 별도 계산']];
     busy(btn, true, '만드는 중…');
-    downloadXlsx('조일ver1_대량견적_' + today() + '_' + b.results.length + '건.xlsx', [
+    downloadXlsx('조일ver1_대량견적_' + (opts.fileDate || today()) + '_' + b.results.length + '건.xlsx', [
       { name: '대량 견적', rows: [head].concat(rows), widths: widths },
       { name: '조건', rows: cond, widths: [16, 60] }
     ]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+  }
+
+  /* ───────── 견적으로 저장 ───────── */
+
+  var QUOTE_STATUS = ['작성', '제출', '수주', '미수주'];
+
+  function statusPill(st) {
+    return '<span class="qstatus s-' + (QUOTE_STATUS.indexOf(st) + 1) + '">' + esc(st || '작성') + '</span>';
+  }
+
+  function quoteFieldsHtml(q) {
+    return '<div class="field"><label>견적명 <span style="color:var(--red)">*</span></label><input class="input" data-f="name" maxlength="100" value="' + esc(q.name || '') + '" placeholder="예) A견적 · 평택→전국 5톤"></div>' +
+      '<div class="field"><label>거래처</label><input class="input" data-f="client" maxlength="100" value="' + esc(q.client || '') + '" placeholder="예) 쿠팡, 삼다수"></div>' +
+      '<div class="field"><label>진행 상태</label><div class="segmented" data-f="status">' + QUOTE_STATUS.map(function (st) {
+        return '<button type="button" data-v="' + st + '" class="' + ((q.status || '작성') === st ? 'on' : '') + '">' + st + '</button>';
+      }).join('') + '</div></div>' +
+      '<div class="field"><label>메모</label><textarea class="input memo" data-f="memo" maxlength="2000" placeholder="조건, 특이사항, 제출 금액 등">' + esc(q.memo || '') + '</textarea></div>';
+  }
+
+  function bindQuoteFields(root) {
+    $$('[data-f="status"] button', root).forEach(function (b) {
+      b.onclick = function () { $$('[data-f="status"] button', root).forEach(function (x) { x.classList.toggle('on', x === b); }); };
+    });
+    return function () {
+      var on = $('[data-f="status"] button.on', root);
+      return { name: $('[data-f="name"]', root).value.trim(), client: $('[data-f="client"]', root).value.trim(), memo: $('[data-f="memo"]', root).value, status: on ? on.dataset.v : '작성' };
+    };
+  }
+
+  function openSaveQuote(recordId, defaults) {
+    modal({
+      eyebrow: '견적모음', title: '견적으로 저장',
+      body: '<p class="muted small" style="margin:0 0 14px">지금 보이는 결과(그때 금액 그대로)를 견적모음에 보관합니다. 기간 제한 없이 남아요.</p>' + quoteFieldsHtml(defaults || {}),
+      foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="qSave">저장</button>',
+      onMount: function (m, close) {
+        var read = bindQuoteFields(m);
+        $('#qSave', m).onclick = function () {
+          var f = read();
+          if (!f.name) return toast('견적명을 입력하세요.', 'err');
+          var btn = this; busy(btn, true, '저장 중…');
+          api('quotes.save', Object.assign({ recordId: recordId }, f)).then(function () {
+            close();
+            state.quotes.list = null;
+            toast('견적모음에 저장했습니다.');
+          }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+        };
+      }
+    });
+  }
+
+  /* ───────── 스냅샷 보기 (조회기록·견적모음 상세 공용) ───────── */
+
+  function snapshotInfoHtml(meta) {
+    return '<div class="snap-info">' +
+      '<span><b>조회</b> ' + esc(meta.at) + '</span>' +
+      '<span><b>조회자</b> ' + esc(meta.user ? meta.user.name + ' (' + meta.user.id + ')' : '') + '</span>' +
+      '<span><b>밀크런</b> ' + esc(meta.baseTon || '') + ' · ' + (meta.roundTrip ? '왕복' : '편도') + '</span>' +
+      '<span><b>경유가</b> ' + (meta.diesel ? won(meta.diesel.price) + '원/L (' + esc(meta.diesel.source) + ')' : '–') + '</span>' +
+      '</div>';
+  }
+
+  /** 스냅샷 본문을 box에 그립니다. 금액은 저장 당시 그대로. */
+  function renderSnapshot(meta, items, box, holder, recordId) {
+    var tons = meta.tons || state.pub.tons;
+    var fileDate = String(meta.at || '').slice(0, 10) || today();
+    if (meta.type === '단건') {
+      var it = items[0];
+      if (!it || !it.result) { box.innerHTML = '<div class="card muted">결과가 없습니다.</div>'; return; }
+      renderSingleView(it.result, box, { tons: tons, animate: false, recordId: recordId, fileDate: fileDate });
+      return;
+    }
+    if (!holder.bulk) {
+      holder.bulk = {
+        results: items.map(function (x) { return { no: x.no, origin: x.origin, dest: x.dest, status: x.result ? 'ok' : 'error', result: x.result, error: x.error }; }),
+        meta: { baseTon: meta.baseTon, diesel: meta.diesel }, page: 0, sort: 'no', search: '', filter: 'all', detail: true, running: false
+      };
+    }
+    renderBulkView(holder.bulk, box, {
+      live: false, animate: false, tons: tons, roundTrip: meta.roundTrip, recordId: recordId, fileDate: fileDate,
+      when: meta.at, who: meta.user ? meta.user.name + ' (' + meta.user.id + ')' : ''
+    });
+  }
+
+  /** 그때 경로 그대로 현재 단가로 다시 계산 → 단건/대량 화면으로 이동해서 바로 실행 */
+  function recalcNow(meta, items) {
+    if (meta.type === '단건') {
+      var it = items[0];
+      state.calc.origin = it.origin; state.calc.dest = it.dest;
+      if (state.pub.tons.indexOf(meta.baseTon) !== -1) state.calc.baseTon = meta.baseTon;
+      state.calc.result = null;
+      state.view = 'calc'; render();
+      $('#calcForm').requestSubmit ? $('#calcForm').requestSubmit() : $('#calcBtn').click();
+      return;
+    }
+    var b = state.bulk;
+    if (b.running) return toast('대량 계산이 진행 중입니다. 끝난 뒤 다시 시도하세요.', 'err');
+    b.mode = 'pairs';
+    b.pairsText = items.map(function (x) { return x.origin + '\t' + x.dest; }).join('\n');
+    if (state.pub.tons.indexOf(meta.baseTon) !== -1) state.calc.baseTon = meta.baseTon;
+    b.results = [];
+    state.view = 'bulk'; render();
+    startBulk();
+  }
+
+  /* ───────── 조회기록 ───────── */
+
+  function renderHistory() {
+    var h = state.hist;
+    if (h.detail) return renderHistoryDetail();
+    var isAdmin = state.user.role === 'admin';
+    $('#main').innerHTML =
+      '<div class="card">' +
+      '<div class="row-between" style="flex-wrap:wrap;margin-bottom:14px"><div><div class="eyebrow">History · 조회기록</div><h2>' + (isAdmin ? '전체 조회기록' : '내 조회기록') + '</h2>' +
+      '<p class="muted small" style="margin:6px 0 0">상세보기에서 그때 결과를 그대로 다시 볼 수 있어요. 상세 내용은 조회 후 <b>' + esc(state.pub.retentionDays || 90) + '일</b>간 보관되고, 견적모음에 저장하면 계속 남습니다.</p></div>' +
+      '<button class="btn btn-sm" id="hReload">새로고침</button></div>' +
+      '<div class="toolbar">' +
+      '<div class="segmented" id="hDays">' + [[7, '7일'], [30, '30일'], [90, '90일'], [0, '전체']].map(function (d) {
+        return '<button type="button" data-d="' + d[0] + '" class="' + (h.days === d[0] ? 'on' : '') + '">' + d[1] + '</button>';
+      }).join('') + '</div>' +
+      '<select class="input input-sm" id="hType" style="width:auto"><option value="">단건+대량</option><option value="단건">단건</option><option value="대량">대량</option></select>' +
+      (isAdmin ? '<select class="input input-sm" id="hUser" style="width:auto"><option value="">전체 사용자</option>' + (h.users || []).map(function (u) {
+        return '<option value="' + esc(u.id) + '">' + esc(u.name) + ' (' + esc(u.id) + ')</option>';
+      }).join('') + '</select>' : '') +
+      '<input class="input input-sm" id="hSearch" placeholder="주소·이름 검색 후 Enter" value="' + esc(h.q) + '" style="max-width:260px">' +
+      '</div><div id="hList"></div></div>';
+
+    $('#hType').value = h.type;
+    if (isAdmin) $('#hUser').value = h.userId;
+    $$('#hDays button').forEach(function (b) { b.onclick = function () { h.days = Number(b.dataset.d); loadHistory(); }; });
+    $('#hType').onchange = function () { h.type = this.value; loadHistory(); };
+    if (isAdmin) $('#hUser').onchange = function () { h.userId = this.value; loadHistory(); };
+    $('#hSearch').onkeydown = function (e) { if (e.key === 'Enter') { h.q = this.value.trim(); loadHistory(); } };
+    $('#hReload').onclick = function () { loadHistory(); };
+    if (h.logs) drawHistoryList(); else loadHistory();
+  }
+
+  function loadHistory() {
+    var h = state.hist;
+    $$('#hDays button').forEach(function (b) { b.classList.toggle('on', Number(b.dataset.d) === h.days); });
+    var list = $('#hList'); if (list) list.innerHTML = '<p class="muted"><span class="spinner dark"></span> 불러오는 중…</p>';
+    api('history.list', { days: h.days, type: h.type, userId: h.userId, q: h.q }).then(function (r) {
+      h.logs = r.logs;
+      if (r.users) {
+        var hadUsers = !!h.users; h.users = r.users;
+        if (!hadUsers && state.view === 'history' && !h.detail) return renderHistory();
+      }
+      if (state.view === 'history' && !h.detail) drawHistoryList();
+    }).catch(function (err) {
+      var l = $('#hList'); if (l) l.innerHTML = '<p style="color:var(--red)">' + esc(err.message) + '</p>';
+    });
+  }
+
+  function drawHistoryList() {
+    var h = state.hist, isAdmin = state.user.role === 'admin';
+    var list = $('#hList'); if (!list) return;
+    if (!h.logs.length) { list.innerHTML = '<p class="muted" style="margin:18px 0 4px">조건에 맞는 기록이 없습니다.</p>'; return; }
+    list.innerHTML = '<div class="table-wrap"><table class="data hist"><thead><tr><th>일시</th>' + (isAdmin ? '<th class="left">사용자</th>' : '') +
+      '<th class="left">종류</th><th class="left">상차지</th><th class="left">하차지</th><th>거리</th><th></th></tr></thead><tbody>' +
+      h.logs.map(function (l, i) {
+        var type = l.type || (/^대량/.test(l.note || '') ? '대량' : '단건');
+        return '<tr style="--i:' + Math.min(i, 20) + '"><td class="small muted">' + esc(l.at) + '</td>' +
+          (isAdmin ? '<td class="left">' + esc(l.name) + ' <span class="muted small">' + esc(l.id) + '</span></td>' : '') +
+          '<td class="left"><span class="badge ' + (type === '대량' ? 'down' : 'up') + '">' + type + (type === '대량' && l.count ? ' ' + won(l.count) + '건' : '') + '</span></td>' +
+          '<td class="left wrap">' + esc(l.from) + '</td><td class="left wrap">' + esc(l.to) + '</td>' +
+          '<td class="num">' + (l.km === '' || l.km == null ? '–' : esc(l.km) + 'km') + '</td>' +
+          '<td><div class="actions" style="justify-content:flex-end;flex-wrap:nowrap">' +
+          (l.hasSnapshot
+            ? '<button class="btn btn-sm" data-open="' + esc(l.recordId) + '">상세보기</button><button class="btn btn-sm btn-ghost" data-save="' + esc(l.recordId) + '">견적 저장</button>'
+            : '<span class="small muted">' + (l.recordId ? '보관 기간 지남' : '상세 없음') + '</span>') +
+          '</div></td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      (h.logs.length >= 300 ? '<p class="hint">최근 300건까지 표시합니다. 기간이나 검색으로 좁혀 보세요.</p>' : '');
+    $$('[data-open]', list).forEach(function (b) { b.onclick = function () { h.detail = b.dataset.open; h.detailData = null; renderHistory(); window.scrollTo(0, 0); }; });
+    $$('[data-save]', list).forEach(function (b) { b.onclick = function () { openSaveQuote(b.dataset.save, {}); }; });
+  }
+
+  function renderHistoryDetail() {
+    var h = state.hist;
+    $('#main').innerHTML =
+      '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><button class="btn btn-sm" id="hBack">← 조회기록</button><div class="actions" id="hActs"></div></div>' +
+      '<div id="hHead"></div><div id="hBody"><div class="card muted"><span class="spinner dark"></span> 그때 결과를 불러오는 중…</div></div>';
+    $('#hBack').onclick = function () { h.detail = null; h.detailData = null; renderHistory(); };
+    var id = h.detail;
+    var show = function (d) {
+      if (state.view !== 'history' || h.detail !== id) return;
+      $('#hHead').innerHTML = '<div class="card" style="margin-bottom:16px"><div class="eyebrow">Snapshot · 그때 결과</div><h3>' +
+        esc(d.meta.type === '대량' ? '대량 ' + won(d.items.length) + '건 · ' + d.log.from : d.log.from + ' → ' + d.log.to) + '</h3>' + snapshotInfoHtml(d.meta) +
+        '<p class="hint" style="margin:10px 0 0">아래 금액은 조회 당시 단가 기준입니다. 지금 단가로 보려면 "현재 단가로 다시 계산"을 누르세요.</p></div>';
+      $('#hActs').innerHTML = '<button class="btn btn-sm" id="hRecalc">현재 단가로 다시 계산</button>';
+      $('#hRecalc').onclick = function () { recalcNow(d.meta, d.items); };
+      renderSnapshot(d.meta, d.items, $('#hBody'), d, id);
+    };
+    if (h.detailData) return show(h.detailData);
+    api('history.get', { recordId: id }).then(function (d) { h.detailData = d; show(d); }).catch(function (err) {
+      if (h.detail === id) $('#hBody').innerHTML = '<div class="card"><p style="margin:0">' + esc(err.message) + '</p></div>';
+    });
+  }
+
+  /* ───────── 견적모음 ───────── */
+
+  function renderQuotes() {
+    var qs = state.quotes;
+    if (qs.detail) return renderQuoteDetail();
+    var isAdmin = state.user.role === 'admin';
+    $('#main').innerHTML =
+      '<div class="card">' +
+      '<div class="row-between" style="flex-wrap:wrap;margin-bottom:14px"><div><div class="eyebrow">Quotes · 견적모음</div><h2>' + (isAdmin ? '전체 견적모음' : '내 견적모음') + '</h2>' +
+      '<p class="muted small" style="margin:6px 0 0">계산 결과나 조회기록에서 <b>견적으로 저장</b>한 것들이 여기에 쌓입니다. 저장 당시 금액 그대로 보관돼요.</p></div>' +
+      '<button class="btn btn-sm" id="qReload">새로고침</button></div>' +
+      '<div class="toolbar">' +
+      '<div class="segmented" id="qStatus">' + [''].concat(QUOTE_STATUS).map(function (st) {
+        return '<button type="button" data-s="' + st + '" class="' + (qs.status === st ? 'on' : '') + '">' + (st || '전체') + '</button>';
+      }).join('') + '</div>' +
+      '<input class="input input-sm" id="qSearch" placeholder="견적명·거래처·메모·주소 검색" value="' + esc(qs.q) + '" style="max-width:280px">' +
+      '</div><div id="qList"></div></div>';
+    $$('#qStatus button').forEach(function (b) {
+      b.onclick = function () { qs.status = b.dataset.s; $$('#qStatus button').forEach(function (x) { x.classList.toggle('on', x === b); }); drawQuoteList(); };
+    });
+    var st;
+    $('#qSearch').oninput = function () { var v = this.value; clearTimeout(st); st = setTimeout(function () { qs.q = v.trim(); drawQuoteList(); }, 200); };
+    $('#qReload').onclick = function () { qs.list = null; loadQuotes(); };
+    if (qs.list) drawQuoteList(); else loadQuotes();
+  }
+
+  function loadQuotes() {
+    var l = $('#qList'); if (l) l.innerHTML = '<p class="muted"><span class="spinner dark"></span> 불러오는 중…</p>';
+    api('quotes.list').then(function (r) {
+      state.quotes.list = r.quotes;
+      if (state.view === 'quotes' && !state.quotes.detail) drawQuoteList();
+    }).catch(function (err) { var x = $('#qList'); if (x) x.innerHTML = '<p style="color:var(--red)">' + esc(err.message) + '</p>'; });
+  }
+
+  function drawQuoteList() {
+    var qs = state.quotes, isAdmin = state.user.role === 'admin';
+    var list = $('#qList'); if (!list || !qs.list) return;
+    var q = qs.q;
+    var items = qs.list.filter(function (x) {
+      if (qs.status && x.status !== qs.status) return false;
+      return !q || (x.name + ' ' + x.client + ' ' + x.memo + ' ' + x.from + ' ' + x.to + ' ' + x.userName).indexOf(q) !== -1;
+    });
+    var counts = {};
+    qs.list.forEach(function (x) { counts[x.status] = (counts[x.status] || 0) + 1; });
+    $$('#qStatus button').forEach(function (b) {
+      var n = b.dataset.s ? counts[b.dataset.s] || 0 : qs.list.length;
+      b.innerHTML = (b.dataset.s || '전체') + ' <span class="cnt">' + n + '</span>';
+    });
+    if (!items.length) { list.innerHTML = '<p class="muted" style="margin:18px 0 4px">' + (qs.list.length ? '조건에 맞는 견적이 없습니다.' : '아직 저장한 견적이 없어요. 계산 결과에서 <b>견적으로 저장</b>을 눌러 보세요.') + '</p>'; return; }
+    list.innerHTML = '<div class="qgrid">' + items.map(function (x, i) {
+      return '<button class="qcard" style="--i:' + Math.min(i, 12) + '" data-id="' + esc(x.id) + '">' +
+        '<div class="row-between"><span class="qname">' + esc(x.name) + '</span>' + statusPill(x.status) + '</div>' +
+        (x.client ? '<div class="qclient">' + esc(x.client) + '</div>' : '') +
+        '<div class="qroute"><span class="pin from"></span>' + esc(x.from) + '<br><span class="pin to"></span>' + esc(x.to) + '</div>' +
+        (x.memo ? '<div class="qmemo">' + esc(x.memo) + '</div>' : '') +
+        '<div class="qfoot"><span class="badge ' + (x.type === '대량' ? 'down' : 'up') + '">' + esc(x.type) + (x.type === '대량' ? ' ' + won(x.count) + '건' : '') + '</span>' +
+        '<span>' + (isAdmin ? esc(x.userName) + ' · ' : '') + esc(String(x.savedAt).slice(0, 10)) + '</span></div></button>';
+    }).join('') + '</div>';
+    $$('.qcard', list).forEach(function (c) { c.onclick = function () { qs.detail = c.dataset.id; qs.detailData = null; renderQuotes(); window.scrollTo(0, 0); }; });
+  }
+
+  function renderQuoteDetail() {
+    var qs = state.quotes, id = qs.detail;
+    $('#main').innerHTML =
+      '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><button class="btn btn-sm" id="qBack">← 견적모음</button><div class="actions" id="qActs"></div></div>' +
+      '<div id="qHead"><div class="card muted"><span class="spinner dark"></span> 견적을 불러오는 중…</div></div><div id="qBody" style="margin-top:16px"></div>';
+    $('#qBack').onclick = function () { qs.detail = null; qs.detailData = null; renderQuotes(); };
+    var show = function (d) {
+      if (state.view !== 'quotes' || qs.detail !== id) return;
+      var q = d.quote;
+      $('#qHead').innerHTML = '<div class="card qdetail">' +
+        '<div class="row-between" style="flex-wrap:wrap;margin-bottom:12px"><div><div class="eyebrow">Quote · 저장된 견적</div><h2>' + esc(q.name) + '</h2></div>' + statusPill(q.status) + '</div>' +
+        '<div class="qedit"><div>' + quoteFieldsHtml(q) + '</div>' +
+        '<div class="qmeta"><div><b>저장</b> ' + esc(q.savedAt) + ' · ' + esc(q.userName) + '</div>' + (q.updatedAt && q.updatedAt !== q.savedAt ? '<div><b>수정</b> ' + esc(q.updatedAt) + '</div>' : '') +
+        snapshotInfoHtml(d.meta) + '</div></div>' +
+        '<div class="actions" style="justify-content:flex-end;margin-top:6px"><button class="btn btn-sm btn-danger" id="qDel">삭제</button><button class="btn btn-sm btn-primary" id="qUpd">변경 저장</button></div></div>';
+      var read = bindQuoteFields($('#qHead'));
+      $('#qUpd').onclick = function () {
+        var f = read(); if (!f.name) return toast('견적명을 입력하세요.', 'err');
+        var btn = this; busy(btn, true, '저장 중…');
+        api('quotes.update', { id: id, patch: f }).then(function (r) {
+          d.quote = r.quote; qs.list = null; toast('변경사항을 저장했습니다.'); show(d);
+        }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+      };
+      $('#qDel').onclick = function () {
+        if (!confirm('"' + q.name + '" 견적을 삭제할까요? 되돌릴 수 없습니다.')) return;
+        var btn = this; busy(btn, true, '삭제 중…');
+        api('quotes.delete', { id: id }).then(function () {
+          qs.detail = null; qs.detailData = null; qs.list = null; toast('삭제했습니다.'); renderQuotes();
+        }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+      };
+      $('#qActs').innerHTML = '<button class="btn btn-sm" id="qRecalc">현재 단가로 다시 계산</button>';
+      $('#qRecalc').onclick = function () { recalcNow(d.meta, d.items); };
+      if (!d.drawn) { renderSnapshot(d.meta, d.items, $('#qBody'), d, null); d.drawn = true; }
+    };
+    if (qs.detailData) { qs.detailData.drawn = false; return show(qs.detailData); }
+    api('quotes.get', { id: id }).then(function (d) { qs.detailData = d; show(d); }).catch(function (err) {
+      if (qs.detail === id) $('#qHead').innerHTML = '<div class="card"><p style="margin:0">' + esc(err.message) + '</p></div>';
+    });
   }
 
   /* ───────── 관리자 ───────── */
@@ -900,7 +1241,6 @@
     ['region', '지역 할증', 'var(--yellow)'],
     ['tariff', '타리프 단가', 'var(--red)'],
     ['users', '계정 관리', 'var(--cyan)'],
-    ['logs', '조회 기록', 'var(--green)'],
     ['keys', 'API 키', 'var(--ink-2)']
   ];
 
@@ -946,17 +1286,10 @@
 
   function showAdminTab() {
     var a = state.admin, tab = a.tab;
-    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, logs: adminLogs, keys: adminKeys };
+    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, keys: adminKeys };
     var ready = a.loaded && (tab !== 'tariff' || a.tariff);
     if (ready) {
       views[tab]();
-      if (tab === 'logs') {
-        // 기록은 계속 쌓이니까 화면은 바로 보여주고 뒤에서 최신으로 갱신
-        api('admin.getLogs', { limit: 200 }).then(function (r) {
-          a.logs = r.logs;
-          if (state.view === 'admin' && a.tab === 'logs') adminLogs();
-        }).catch(function () { /* 조용히 무시 — 새로고침 버튼으로 다시 가능 */ });
-      }
       return;
     }
     adminLoading(tab === 'tariff' && a.loaded ? '타리프 불러오는 중…' : '관리자 정보 불러오는 중…');
@@ -1042,6 +1375,7 @@
       }).join('') + '</tbody></table></div></div>' +
 
       '<div class="group"><div class="group-head"><h3>거리 · 금액 처리</h3></div><div class="form-grid">' +
+      '<div class="field"><label>조회 상세 보관 기간 (일)</label><input class="input num" type="number" min="7" max="3650" id="retDays" value="' + esc(s.snapshot.retentionDays) + '"><span class="hint">지나면 조회기록의 상세 내용만 삭제 (견적모음은 유지)</span></div>' +
       '<div class="field"><label>대량 계산 최대 건수</label><input class="input num" type="number" min="1" max="3000" id="maxRows" value="' + esc(s.batch.maxRows) + '"></div>' +
       '<div class="field"><label>타리프 최대 거리 (km)</label><input class="input num" type="number" min="1" id="maxKm" value="' + esc(s.maxKm) + '"><span class="hint">초과 시 "별도 문의"</span></div>' +
       '<div class="field"><label>거리 소수점 처리</label><select class="input" id="kmRound">' +
@@ -1065,6 +1399,7 @@
         case 'mrTrip': s.milkrun.roundTrip = v === '1'; break;
         case 'fuelMode': s.fuel.mode = v; break;
         case 'fuelPrice': s.fuel.manualPrice = Number(v); break;
+        case 'retDays': s.snapshot.retentionDays = Math.min(3650, Math.max(7, Number(v) || 90)); break;
         case 'maxRows': s.batch.maxRows = Math.min(3000, Math.max(1, Number(v) || 1000)); break;
         case 'maxKm': s.maxKm = Number(v); break;
         case 'kmRound': s.kmRounding = v; break;
@@ -1323,28 +1658,6 @@
         }).catch(function (err) { busy(b, false); toast(err.message, 'err'); });
       };
     });
-  }
-
-  function adminLogs() {
-    var logs = state.admin.logs;
-    $('#adminBody').innerHTML =
-      '<div class="card"><div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><div><div class="eyebrow">Logs · 조회 기록</div><h2>최근 조회 ' + logs.length + '건</h2></div>' +
-      '<div class="actions"><button class="btn btn-sm" id="logReload">새로고침</button><button class="btn btn-sm" id="logCsv">CSV 내려받기</button></div></div>' +
-      (logs.length ? '<div class="table-wrap"><table class="data"><thead><tr><th>일시</th><th style="text-align:left">사용자</th><th style="text-align:left">상차지</th><th style="text-align:left">하차지</th><th>거리</th></tr></thead><tbody>' +
-        logs.map(function (l, i) {
-          return '<tr style="--i:' + Math.min(i, 20) + '"><td class="small muted">' + esc(l.at) + '</td><td style="text-align:left">' + esc(l.name) + ' <span class="muted small">' + esc(l.id) + '</span></td>' +
-            '<td style="text-align:left;white-space:normal;min-width:180px">' + esc(l.from) + '</td><td style="text-align:left;white-space:normal;min-width:180px">' + esc(l.to) + (l.note ? ' <span class="badge off">' + esc(l.note) + '</span>' : '') + '</td><td class="num">' + (l.km === '' || l.km == null ? '–' : esc(l.km) + 'km') + '</td></tr>';
-        }).join('') + '</tbody></table></div>' : '<p class="muted" style="margin:0">아직 조회 기록이 없습니다.</p>') + '</div>';
-    $('#logReload').onclick = function () {
-      var btn = this; busy(btn, true, '불러오는 중…');
-      api('admin.getLogs', { limit: 200 }).then(function (r) {
-        state.admin.logs = r.logs;
-        if (state.view === 'admin' && state.admin.tab === 'logs') adminLogs();
-      }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
-    };
-    $('#logCsv').onclick = function () {
-      downloadCsv('조일ver1_조회기록_' + today() + '.csv', [['일시', '아이디', '이름', '상차지', '하차지', '거리(km)', '비고']].concat(logs.map(function (l) { return [l.at, l.id, l.name, l.from, l.to, l.km, l.note]; })));
-    };
   }
 
   function adminKeys() {

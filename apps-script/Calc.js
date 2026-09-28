@@ -30,6 +30,7 @@ function joilDefaultSettings() {
     fuel: { mode: 'manual', manualPrice: 1500 },
     milkrun: { baseTon: '5톤', roundTrip: false },
     batch: { maxRows: 1000 },
+    snapshot: { retentionDays: 90 },
     tons: [
       { name: '1톤', tollClass: 1, kmPerL: 9 },
       { name: '1.4톤', tollClass: 1, kmPerL: 8 },
@@ -51,7 +52,7 @@ function joilMergeSettings(saved) {
   if (!saved) return d;
   var out = {};
   for (var k in d) out[k] = saved.hasOwnProperty(k) ? saved[k] : d[k];
-  ['priceRounding', 'downhill', 'fuel', 'milkrun', 'batch'].forEach(function (k) {
+  ['priceRounding', 'downhill', 'fuel', 'milkrun', 'batch', 'snapshot'].forEach(function (k) {
     var merged = {};
     for (var x in d[k]) merged[x] = (out[k] && out[k].hasOwnProperty(x)) ? out[k][x] : d[k][x];
     out[k] = merged;
