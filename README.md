@@ -1,5 +1,24 @@
-# Welcome to GitHub Desktop!
+# 조일ver1 · 운임 견적 계산기
 
-This is your README. READMEs are where you can communicate what your project is and how to use it.
+상차지와 하차지를 넣으면 거리, 유류비, 통행료, 톤수별(1~25톤) 운임이 한 번에 나오는 사내 견적 도구입니다.
 
-Write your name on line 6, save it, and then head back to GitHub Desktop.
+- **견적 계산**: 카카오 경로 거리 → 타리프 단가, 지역 할증(상·하차지 합산), 하행 할증, 유류비, 통행료 → 합계
+- **관리자 페이지**: 타리프(1~600km × 9톤수), 지역 할증, 하행 %, 연비, 통행료 차종, 금액 반올림, 계정 발급과 중지, 조회 기록
+- **보안**: 단가와 API 키는 비공개 구글 시트와 Apps Script에만 저장됩니다. 이 저장소에는 화면 코드만 있습니다.
+
+## 폴더 구성
+
+| 경로 | 내용 |
+|---|---|
+| `index.html`, `assets/` | 화면 (GitHub Pages) |
+| `config.js` | 서버(Apps Script) 주소. 비어 있으면 **데모 모드** |
+| `apps-script/Code.js` | 서버 코드. Apps Script에 붙여넣기 |
+| `apps-script/Calc.js` | 계산 규칙. 서버와 데모 모드가 함께 사용 |
+| `SETUP.md` | **설치 안내서** |
+
+## 데모 모드
+
+`config.js`의 `API_URL`이 비어 있으면 임의 단가와 주요 도시 좌표로 동작합니다.
+아이디 `admin`, 비밀번호 `demo1234`로 들어갈 수 있습니다.
+
+설치 방법은 [SETUP.md](SETUP.md)를 보세요.
