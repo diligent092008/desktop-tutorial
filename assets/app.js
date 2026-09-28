@@ -47,10 +47,18 @@
     var req = Object.assign({ action: action, token: state.token }, payload || {});
     var p = DEMO
       ? window.JoilDemo.call(req)
-      : fetch(API_URL, { method: 'POST', body: JSON.stringify(req) })
+      // 캐시·쿠키가 끼어들지 않도록: 매번 고유 주소, 캐시 사용 안 함, 쿠키 안 보냄
+      : fetch(API_URL + (API_URL.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now() + Math.random().toString(36).slice(2, 6), {
+        method: 'POST', body: JSON.stringify(req), cache: 'no-store', credentials: 'omit', redirect: 'follow'
+      })
         .then(function (res) {
           if (!res.ok) throw new Error('서버 연결 오류 (' + res.status + ')');
-          return res.json();
+          return res.text();
+        })
+        .then(function (text) {
+          try { return JSON.parse(text); } catch (e) {
+            throw new Error('서버 응답이 올바르지 않습니다. 브라우저 캐시를 지우거나(Ctrl+Shift+Delete) 시크릿 창에서 시도해 보세요.');
+          }
         })
         .then(function (data) {
           if (!data.ok) throw new Error(data.error || '알 수 없는 오류');
