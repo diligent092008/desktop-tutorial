@@ -67,9 +67,17 @@ window.JOIL_CONFIG = {
 
 ---
 
+## 5-1단계. GitHub Pages 켜기 (사이트 주소 만들기)
+
+1. GitHub 저장소 → **Settings → General** 맨 아래 **Danger Zone → Change visibility → Public**
+2. **Settings → Pages → Build and deployment**에서 Source를 **Deploy from a branch**로, Branch를 **`claude/annyeong-m64uzj`**, 폴더를 **/(root)**로 고르고 **Save**
+3. 1~2분 뒤 `https://diligent092008.github.io/desktop-tutorial/`에서 접속됩니다.
+
+---
+
 ## 6단계. 첫 로그인과 필수 설정
 
-1. 사이트에 들어가 `admin`과 임시 비밀번호로 로그인하고, **새 비밀번호**로 바꿉니다.
+1. `https://diligent092008.github.io/desktop-tutorial/` 에 들어가 `admin`과 임시 비밀번호로 로그인하고, **새 비밀번호**로 바꿉니다.
 2. **관리자 → API 키**에서 카카오 **REST API 키**를 저장하고 **연결 테스트**를 누릅니다.
    - 지금 구글 시트에서 쓰는 키를 그대로 써도 됩니다.
    - 오류가 나면 카카오 디벨로퍼스의 앱 설정에서 **카카오맵(로컬) 사용 설정**을 켰는지, 카카오모빌리티 길찾기 사용 등록이 되어 있는지 확인하세요.
@@ -78,14 +86,6 @@ window.JOIL_CONFIG = {
    - 실제 단가는 이렇게 **대리님만** 넣습니다. GitHub나 Claude를 거치지 않습니다.
 4. **관리자 → 기본 설정**에서 하행 할증 %, 톤수별 연비와 통행료 차종을 회사 기준으로 확인합니다. 지금은 **임시값**입니다.
 5. **관리자 → 계정 관리**에서 직원 계정을 발급합니다. 임시 비밀번호는 한 번만 보이니 바로 전달하세요.
-
----
-
-## GitHub Pages 켜기 (사이트 주소 만들기)
-
-1. GitHub 저장소 → **Settings → General** 맨 아래 **Danger Zone → Change visibility → Public**
-2. **Settings → Pages → Build and deployment**에서 Source를 **Deploy from a branch**로, Branch를 조일ver1 코드가 있는 브랜치와 **/(root)**로 고르고 **Save**
-3. 1~2분 뒤 `https://diligent092008.github.io/desktop-tutorial/`에서 접속됩니다.
 
 ---
 
