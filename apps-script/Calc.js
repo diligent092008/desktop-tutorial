@@ -5,13 +5,17 @@
  *  1) 구글 Apps Script 프로젝트에 "Calc" 파일로 붙여넣어 실제 계산에 사용
  *  2) 웹 화면의 데모 모드에서 그대로 불러와 사용
  * 브라우저 전용 / Apps Script 전용 기능을 쓰지 않는 순수 함수만 둡니다.
+ *
+ * 계산 구조
+ *  - 톤수별 견적 = 타리프 + 지역 할증(상·하차지 합산) + 하행 할증
+ *  - 밀크런     = 기준 톤수 1개의 유류비 + 통행료 (편도 / 왕복)
  */
 
 var JOIL_TONS = ['1톤', '1.4톤', '2.5톤', '3.5톤', '5톤', '8톤', '11톤', '14톤', '25톤'];
 
 function joilDefaultSettings() {
   return {
-    version: 1,
+    version: 2,
     maxKm: 600,
     kmRounding: 'ceil', // ceil 올림 | round 반올림 | floor 내림
     priceRounding: { unit: 1000, mode: 'round' },
@@ -23,8 +27,9 @@ function joilDefaultSettings() {
       { name: '오지', amount: 30000, target: 'address', keywords: [] }
     ],
     downhill: { enabled: true, minKm: 200, percent: 0 },
-    fuel: { include: true, mode: 'manual', manualPrice: 1500, distanceFactor: 1 },
-    toll: { include: true, mode: 'ratio', ratios: { 1: 1, 2: 1.02, 3: 1.06, 4: 1.42, 5: 1.68 } },
+    fuel: { mode: 'manual', manualPrice: 1500 },
+    milkrun: { baseTon: '5톤', roundTrip: false },
+    batch: { maxRows: 1000 },
     tons: [
       { name: '1톤', tollClass: 1, kmPerL: 9 },
       { name: '1.4톤', tollClass: 1, kmPerL: 8 },
@@ -40,18 +45,25 @@ function joilDefaultSettings() {
   };
 }
 
-/** 저장된 설정에 빠진 항목이 있으면 기본값으로 채웁니다. */
+/** 저장된 설정에 빠진 항목이 있으면 기본값으로 채우고, 없어진 항목은 버립니다. */
 function joilMergeSettings(saved) {
   var d = joilDefaultSettings();
   if (!saved) return d;
   var out = {};
   for (var k in d) out[k] = saved.hasOwnProperty(k) ? saved[k] : d[k];
-  ['priceRounding', 'downhill', 'fuel', 'toll'].forEach(function (k) {
+  ['priceRounding', 'downhill', 'fuel', 'milkrun', 'batch'].forEach(function (k) {
     var merged = {};
     for (var x in d[k]) merged[x] = (out[k] && out[k].hasOwnProperty(x)) ? out[k][x] : d[k][x];
     out[k] = merged;
   });
+  if (!joilFindTon(out, out.milkrun.baseTon)) out.milkrun.baseTon = out.tons[0].name;
+  out.version = d.version;
   return out;
+}
+
+function joilFindTon(settings, name) {
+  for (var i = 0; i < settings.tons.length; i++) if (settings.tons[i].name === name) return settings.tons[i];
+  return null;
 }
 
 /** 개발·시연용 임의 타리프 (실제 단가 아님). rows[km-1][톤수 index] */
@@ -75,6 +87,11 @@ function joilRound(value, unit, mode) {
   return fn(value / unit) * unit;
 }
 
+/** 주소 캐시 키: 공백을 정리해서 같은 주소는 같은 키가 되도록 */
+function joilNormalizeAddress(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
 /** 한 지점(상차지 또는 하차지)에 해당하는 지역 할증 목록 */
 function joilMatchRegions(point, rules) {
   var hits = [];
@@ -93,10 +110,10 @@ function joilMatchRegions(point, rules) {
  * 견적 계산
  * @param {Object} input
  *   origin / dest : { lat, lng, sido, address }
- *   distanceKm    : 실제 경로 거리 (km, 소수 가능)
- *   tollByClass   : { 1: 원, 2: 원, ... } 차종별 통행료 (API 방식일 때)
- *   toll1         : 1종 통행료 (비율 방식일 때 기준)
+ *   distanceKm    : 실제 경로 거리 (km, 소수 가능, 편도)
+ *   toll          : 기준 톤수 차종의 편도 통행료 (원)
  *   dieselPrice   : 경유가 (원/L)
+ *   baseTon       : 밀크런 기준 톤수 이름 (없으면 관리자 기본값)
  * @param {Object} settings  joilMergeSettings 결과
  * @param {Object} tariff    { tons: [...], rows: [[...], ...] }
  */
@@ -116,37 +133,22 @@ function joilComputeQuote(input, settings, tariff) {
   joilMatchRegions(input.dest, s.regionRules).forEach(function (h) { regionHits.push({ point: '하차지', name: h.name, amount: h.amount }); });
   var regionTotal = regionHits.reduce(function (sum, h) { return sum + h.amount; }, 0);
 
-  var diesel = Number(input.dieselPrice) || 0;
-  var fuelKm = rawKm * (Number(s.fuel.distanceFactor) || 1);
-
   var rows = s.tons.map(function (t) {
     var col = tariff.tons.indexOf(t.name);
     var base = (!overMax && col !== -1) ? Number(tariff.rows[km - 1][col]) || 0 : null;
-
-    var tollClass = Number(t.tollClass) || 1;
-    var toll;
-    if (input.tollByClass && input.tollByClass[tollClass] != null) {
-      toll = Number(input.tollByClass[tollClass]);
-    } else {
-      toll = (Number(input.toll1) || 0) * (Number(s.toll.ratios[tollClass]) || 1);
-    }
-    toll = Math.round(toll / 10) * 10;
-
-    var fuel = Number(t.kmPerL) > 0 ? Math.round(fuelKm / Number(t.kmPerL) * diesel / 10) * 10 : 0;
     var downhill = (base != null && downhillApplies) ? Math.round(base * Number(s.downhill.percent) / 100) : 0;
-
-    var total = null;
-    if (base != null) {
-      total = base + regionTotal + downhill;
-      if (s.fuel.include) total += fuel;
-      if (s.toll.include) total += toll;
-      total = joilRound(total, s.priceRounding.unit, s.priceRounding.mode);
-    }
-    return {
-      ton: t.name, tollClass: tollClass, tariff: base, region: regionTotal,
-      downhill: downhill, fuel: fuel, toll: toll, total: total
-    };
+    var total = base == null ? null : joilRound(base + regionTotal + downhill, s.priceRounding.unit, s.priceRounding.mode);
+    return { ton: t.name, tariff: base, region: regionTotal, downhill: downhill, total: total };
   });
+
+  // 밀크런: 기준 톤수 하나로 유류비 + 통행료
+  var baseTon = joilFindTon(s, input.baseTon) || joilFindTon(s, s.milkrun.baseTon) || s.tons[0];
+  var trips = s.milkrun.roundTrip ? 2 : 1;
+  var diesel = Number(input.dieselPrice) || 0;
+  var mrKm = rawKm * trips;
+  var liters = Number(baseTon.kmPerL) > 0 ? mrKm / Number(baseTon.kmPerL) : 0;
+  var fuel = Math.round(liters * diesel / 10) * 10;
+  var toll = Math.round((Number(input.toll) || 0) * trips / 10) * 10;
 
   return {
     distanceKm: Math.round(rawKm * 10) / 10,
@@ -158,11 +160,19 @@ function joilComputeQuote(input, settings, tariff) {
     downhillPercent: downhillApplies ? Number(s.downhill.percent) : 0,
     regionHits: regionHits,
     regionTotal: regionTotal,
-    dieselPrice: diesel,
-    toll1: Number(input.toll1) || (input.tollByClass ? Number(input.tollByClass[1]) || 0 : 0),
-    fuelIncluded: !!s.fuel.include,
-    tollIncluded: !!s.toll.include,
-    rows: rows
+    rows: rows,
+    milkrun: {
+      ton: baseTon.name,
+      tollClass: Number(baseTon.tollClass) || 1,
+      kmPerL: Number(baseTon.kmPerL) || 0,
+      roundTrip: trips === 2,
+      distanceKm: Math.round(mrKm * 10) / 10,
+      liters: Math.round(liters * 10) / 10,
+      dieselPrice: diesel,
+      fuel: fuel,
+      toll: toll,
+      total: fuel + toll
+    }
   };
 }
 

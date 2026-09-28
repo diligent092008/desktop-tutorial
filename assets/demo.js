@@ -25,6 +25,7 @@
     users: [{ id: 'admin', name: '관리자(데모)', role: 'admin', active: true, mustChange: false, pw: 'demo1234', createdAt: today(), lastLogin: '' }],
     logs: []
   };
+  store.settings = joilMergeSettings(store.settings);
   var sessions = loadSessions();
 
   function loadSessions() { try { return JSON.parse(sessionStorage.getItem('joil-demo-sessions') || '{}'); } catch (e) { return {}; } }
@@ -58,6 +59,28 @@
   function user(id) { var u = store.users.filter(function (u) { return u.id === id; })[0]; if (!u) fail('계정을 찾을 수 없습니다.'); return u; }
   function diesel() { var s = store.settings; return s.fuel.mode === 'auto' ? { price: 1520, source: '데모 경유가' } : { price: Number(s.fuel.manualPrice), source: '관리자 기본값' }; }
 
+  function addLog(me, from, to, km, note) {
+    store.logs.unshift({ at: today(), id: me.id, name: me.name, from: from, to: to, km: km, note: note });
+    store.logs = store.logs.slice(0, 200); save();
+  }
+  function quoteMany(pairs, req) {
+    var s = store.settings;
+    var baseTon = joilFindTon(s, req.baseTon) || joilFindTon(s, s.milkrun.baseTon) || s.tons[0];
+    var dp = req.dieselMode === 'manual' && Number(req.dieselPrice) > 0 ? { price: Number(req.dieselPrice), source: '직접 입력' } : diesel();
+    var items = pairs.map(function (p) {
+      var o, d;
+      try { o = geocode(joilNormalizeAddress(p.origin)); } catch (e) { return { error: '상차지: ' + e.message }; }
+      try { d = geocode(joilNormalizeAddress(p.dest)); } catch (e) { return { error: '하차지: ' + e.message }; }
+      if (o.lat === d.lat && o.lng === d.lng) return { error: '경로 없음: 출발지와 도착지가 같습니다' };
+      var km = Math.max(3, haversine(o, d) * 1.22);
+      var toll = km < 15 ? 0 : Math.round((900 + km * 45) * (1 + 0.12 * (Number(baseTon.tollClass) - 1)) / 100) * 100;
+      var r = joilComputeQuote({ origin: o, dest: d, distanceKm: km, toll: toll, dieselPrice: dp.price, baseTon: baseTon.name }, s, store.tariff);
+      r.origin = o; r.dest = d; r.dieselSource = dp.source;
+      return { result: r };
+    });
+    return { items: items, diesel: dp, baseTon: baseTon.name };
+  }
+
   function handle(req) {
     if (req.action === 'login') {
       var u = store.users.filter(function (u) { return u.id === String(req.id || '').trim(); })[0];
@@ -79,18 +102,19 @@
         if (String(req.next || '').length < 8 || !/[A-Za-z]/.test(req.next) || !/[0-9]/.test(req.next)) fail('비밀번호는 영문과 숫자를 포함해 8자 이상이어야 합니다.');
         cu.pw = req.next; cu.mustChange = false; save(); return {};
       case 'publicSettings':
-        return { settings: { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, fuelIncluded: s.fuel.include, tollIncluded: s.toll.include, quoteFooter: s.quoteFooter, maxKm: s.maxKm } };
+        return { settings: { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, quoteFooter: s.quoteFooter, maxKm: s.maxKm } };
       case 'dieselPrice': return diesel();
       case 'quote':
-        var o = geocode(String(req.origin || '').trim()), d = geocode(String(req.dest || '').trim());
-        var km = Math.max(3, haversine(o, d) * 1.22);
-        var toll1 = km < 15 ? 0 : Math.round((900 + km * 45) / 100) * 100;
-        var dp = req.dieselMode === 'manual' && Number(req.dieselPrice) > 0 ? { price: Number(req.dieselPrice), source: '직접 입력' } : diesel();
-        var r = joilComputeQuote({ origin: o, dest: d, distanceKm: km, toll1: toll1, dieselPrice: dp.price }, s, store.tariff);
-        r.origin = o; r.dest = d; r.dieselSource = dp.source;
-        store.logs.unshift({ at: today(), id: me.id, name: me.name, from: o.address, to: d.address, km: r.distanceKm, note: '데모' });
-        store.logs = store.logs.slice(0, 200); save();
-        return { result: r };
+        var one = quoteMany([{ origin: req.origin, dest: req.dest }], req).items[0];
+        if (one.error) fail(one.error);
+        addLog(me, one.result.origin.address, one.result.dest.address, one.result.distanceKm, '데모');
+        return { result: one.result };
+      case 'quoteBatch':
+        if (!req.pairs || !req.pairs.length) fail('계산할 경로가 없습니다.');
+        if (Number(req.batch && req.batch.count) > Number(s.batch.maxRows)) fail('대량 계산은 최대 ' + s.batch.maxRows + '건까지입니다.');
+        var out = quoteMany(req.pairs, req);
+        if (req.batch && Number(req.batch.index) === 0) addLog(me, req.pairs[0].origin, '하차지 ' + req.batch.count + '곳', '', '대량 ' + req.batch.count + '건 (데모)');
+        return out;
     }
     if (me.role !== 'admin') fail('관리자만 사용할 수 있습니다.');
     switch (req.action) {
@@ -126,6 +150,8 @@
         if (req.opinet) store.keys.opinet = true;
         save(); return { keys: store.keys };
       case 'admin.testKakao': return { message: '데모 모드에서는 실제 카카오 연결을 시험하지 않습니다.' };
+      case 'admin.cacheInfo': return { cache: { addresses: 0, routes: 0 } };
+      case 'admin.clearCache': return { cache: { addresses: 0, routes: 0 } };
     }
     fail('알 수 없는 요청입니다: ' + req.action);
   }
@@ -136,7 +162,7 @@
         setTimeout(function () {
           try { var out = handle(JSON.parse(JSON.stringify(req))); resolve(JSON.parse(JSON.stringify(out))); }
           catch (e) { reject(e); }
-        }, req.action === 'quote' ? 450 : 180);
+        }, req.action === 'quote' ? 450 : req.action === 'quoteBatch' ? 250 + 15 * ((req.pairs || []).length) : 180);
       });
     },
     reset: function () { try { localStorage.removeItem('joil-demo'); } catch (e) { } location.reload(); }

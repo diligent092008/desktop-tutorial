@@ -104,6 +104,7 @@ function handle_(req) {
     case 'publicSettings': return { settings: publicSettings_() };
     case 'dieselPrice': return dieselPrice_();
     case 'quote': return quote_(session, req);
+    case 'quoteBatch': return quoteBatch_(session, req);
   }
 
   if (session.role !== 'admin') throw new Error('관리자만 사용할 수 있습니다.');
@@ -119,6 +120,8 @@ function handle_(req) {
     case 'admin.getLogs': return { logs: getLogs_(Number(req.limit) || 200) };
     case 'admin.saveKeys': return saveKeys_(req.kakao, req.opinet);
     case 'admin.testKakao': return testKakao_();
+    case 'admin.cacheInfo': return { cache: cacheInfo_() };
+    case 'admin.clearCache': return { cache: clearCache_() };
   }
   throw new Error('알 수 없는 요청입니다: ' + action);
 }
@@ -262,8 +265,9 @@ function publicSettings_() {
     tons: s.tons.map(function (t) { return t.name; }),
     fuelMode: s.fuel.mode,
     manualPrice: s.fuel.manualPrice,
-    fuelIncluded: s.fuel.include,
-    tollIncluded: s.toll.include,
+    baseTon: s.milkrun.baseTon,
+    roundTrip: s.milkrun.roundTrip,
+    maxRows: s.batch.maxRows,
     quoteFooter: s.quoteFooter,
     maxKm: s.maxKm
   };
@@ -329,34 +333,83 @@ function saveTariff_(tariff) {
 
 /* ───────────── 견적 ───────────── */
 
+var BATCH_CHUNK_MAX = 50;          // 한 번 요청에 받는 최대 경로 수 (화면은 20개씩 보냄)
+var SHEET_GEO_CACHE = '주소캐시';
+var SHEET_ROUTE_CACHE = '경로캐시';
+
+/** 단건 견적 */
 function quote_(session, req) {
-  var originQ = String(req.origin || '').trim();
-  var destQ = String(req.dest || '').trim();
+  var originQ = joilNormalizeAddress(req.origin);
+  var destQ = joilNormalizeAddress(req.dest);
   if (!originQ || !destQ) throw new Error('상차지와 하차지를 모두 입력하세요.');
+  var out = quoteMany_([{ origin: originQ, dest: destQ }], req);
+  var item = out.items[0];
+  if (item.error) throw new Error(item.error);
+  log_(session, item.result.origin.address, item.result.dest.address, item.result.distanceKm, '');
+  return { result: item.result };
+}
 
-  var settings = getSettings_();
-  var tariff = readTariff_();
-  var origin = kakaoGeocode_(originQ);
-  var dest = kakaoGeocode_(destQ);
-  var route = kakaoRoute_(origin, dest, settings);
+/**
+ * 대량 견적 (화면이 20건씩 나눠 여러 번 동시에 보냄)
+ * req.pairs: [{ origin, dest }], req.batch: { index, total, count } — 첫 묶음일 때만 기록 1줄
+ */
+function quoteBatch_(session, req) {
+  var pairs = (req.pairs || []).map(function (p) {
+    return { origin: joilNormalizeAddress(p.origin), dest: joilNormalizeAddress(p.dest) };
+  });
+  if (!pairs.length) throw new Error('계산할 경로가 없습니다.');
+  if (pairs.length > BATCH_CHUNK_MAX) throw new Error('한 번에 ' + BATCH_CHUNK_MAX + '건까지만 보낼 수 있습니다.');
+  var s = getSettings_();
+  var b = req.batch || {};
+  if (Number(b.count) > Number(s.batch.maxRows)) throw new Error('대량 계산은 최대 ' + s.batch.maxRows + '건까지입니다.');
 
-  var diesel;
-  if (req.dieselMode === 'manual' && Number(req.dieselPrice) > 0) {
-    diesel = { price: Number(req.dieselPrice), source: '직접 입력' };
-  } else {
-    diesel = dieselPrice_();
+  var out = quoteMany_(pairs, req);
+  if (Number(b.index) === 0) {
+    var origins = {};
+    pairs.forEach(function (p) { origins[p.origin] = true; });
+    var originText = Object.keys(origins).length === 1 ? pairs[0].origin : '여러 상차지';
+    log_(session, originText, '하차지 ' + (Number(b.count) || pairs.length) + '곳', '', '대량 ' + (Number(b.count) || pairs.length) + '건');
   }
+  return out;
+}
 
-  var result = joilComputeQuote({
-    origin: origin, dest: dest, distanceKm: route.distanceKm,
-    tollByClass: route.tollByClass, toll1: route.tollByClass[1], dieselPrice: diesel.price
-  }, settings, tariff);
-  result.origin = origin;
-  result.dest = dest;
-  result.dieselSource = diesel.source;
+/** 공통: 주소 → 좌표 → 경로 → 계산. 한 건이 실패해도 나머지는 계속합니다. */
+function quoteMany_(pairs, req) {
+  var s = getSettings_();
+  var tariff = readTariff_();
+  var baseTon = joilFindTon(s, req.baseTon) || joilFindTon(s, s.milkrun.baseTon) || s.tons[0];
+  var tollClass = Number(baseTon.tollClass) || 1;
 
-  log_(session, origin.address, dest.address, result.distanceKm, '');
-  return { result: result };
+  var diesel = (req.dieselMode === 'manual' && Number(req.dieselPrice) > 0)
+    ? { price: Number(req.dieselPrice), source: '직접 입력' }
+    : dieselPrice_();
+
+  var queries = [];
+  pairs.forEach(function (p) { queries.push(p.origin, p.dest); });
+  var points = geocodeMany_(queries);
+
+  var routeReqs = [];
+  pairs.forEach(function (p) {
+    var o = points[p.origin], d = points[p.dest];
+    if (o && !o.error && d && !d.error) routeReqs.push({ origin: o, dest: d });
+  });
+  var routes = routeMany_(routeReqs, tollClass);
+
+  var items = pairs.map(function (p) {
+    var o = points[p.origin], d = points[p.dest];
+    if (!o || o.error) return { error: '상차지: ' + ((o && o.error) || '주소를 찾지 못했습니다') };
+    if (!d || d.error) return { error: '하차지: ' + ((d && d.error) || '주소를 찾지 못했습니다') };
+    var r = routes[routeKey_(o, d, tollClass)];
+    if (!r || r.error) return { error: (r && r.error) || '경로를 찾지 못했습니다' };
+    var result = joilComputeQuote({
+      origin: o, dest: d, distanceKm: r.km, toll: r.toll, dieselPrice: diesel.price, baseTon: baseTon.name
+    }, s, tariff);
+    result.origin = o;
+    result.dest = d;
+    result.dieselSource = diesel.source;
+    return { result: result };
+  });
+  return { items: items, diesel: diesel, baseTon: baseTon.name };
 }
 
 function log_(session, from, to, km, note) {
@@ -373,6 +426,88 @@ function getLogs_(limit) {
   return values.map(function (r) { return { at: fmt_(r[0]), id: r[1], name: r[2], from: r[3], to: r[4], km: r[5], note: r[6] }; });
 }
 
+/* ───────────── 영구 캐시 (시트) ───────────── */
+/*
+ * 조회한 주소와 경로는 시트에 계속 저장해 두고 다시 씁니다. → 같은 상차지에서 전국으로 보내는 반복 견적이 빠르고
+ * 카카오 호출도 줄어듭니다. 도로·요금이 바뀌었다고 생각되면 관리자 > API 키 > "캐시 비우기".
+ * 빠른 조회를 위해 스크립트 캐시(6시간)를 앞에 한 겹 더 둡니다.
+ */
+
+function cacheSheet_(name, header) {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+/** keys → { key: value } (스크립트 캐시 → 시트 순서로 찾음) */
+function cacheGetMany_(prefix, sheetName, header, keys, parseRow) {
+  var found = {};
+  if (!keys.length) return found;
+  var sc = CacheService.getScriptCache();
+  var hashed = {};
+  keys.forEach(function (k) { hashed[prefix + md5_(k)] = k; });
+  var hits = sc.getAll(Object.keys(hashed));
+  Object.keys(hits).forEach(function (hk) { found[hashed[hk]] = JSON.parse(hits[hk]); });
+
+  var missing = keys.filter(function (k) { return !found.hasOwnProperty(k); });
+  if (!missing.length) return found;
+  var sh = cacheSheet_(sheetName, header);
+  var last = sh.getLastRow();
+  if (last < 2) return found;
+  var want = {};
+  missing.forEach(function (k) { want[k] = true; });
+  var warm = {};
+  sh.getRange(2, 1, last - 1, header.length).getValues().forEach(function (row) {
+    var k = String(row[0]);
+    if (want[k]) { found[k] = parseRow(row); warm[prefix + md5_(k)] = JSON.stringify(found[k]); }
+  });
+  if (Object.keys(warm).length) sc.putAll(warm, 21600);
+  return found;
+}
+
+function cachePutMany_(prefix, sheetName, header, entries) {
+  if (!entries.length) return;
+  var sc = CacheService.getScriptCache();
+  var warm = {};
+  entries.forEach(function (e) { warm[prefix + md5_(e.key)] = JSON.stringify(e.value); });
+  sc.putAll(warm, 21600);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) return; // 저장 못 해도 계산 결과에는 영향 없음
+  try {
+    var sh = cacheSheet_(sheetName, header);
+    var rows = entries.map(function (e) { return e.row; });
+    sh.getRange(sh.getLastRow() + 1, 1, rows.length, header.length).setValues(rows);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+var GEO_HEADER = ['주소(입력)', '위도', '경도', '시도', '찾은 주소', '저장일'];
+var ROUTE_HEADER = ['경로키', '거리(km)', '통행료', '저장일'];
+
+function cacheInfo_() {
+  var ss = SpreadsheetApp.getActive();
+  var g = ss.getSheetByName(SHEET_GEO_CACHE), r = ss.getSheetByName(SHEET_ROUTE_CACHE);
+  return { addresses: g ? Math.max(0, g.getLastRow() - 1) : 0, routes: r ? Math.max(0, r.getLastRow() - 1) : 0 };
+}
+
+function clearCache_() {
+  var ss = SpreadsheetApp.getActive();
+  [SHEET_GEO_CACHE, SHEET_ROUTE_CACHE].forEach(function (n) { var sh = ss.getSheetByName(n); if (sh) ss.deleteSheet(sh); });
+  // 스크립트 캐시는 키를 모두 알 수 없으므로 접두어를 바꿔서 무효화
+  PropertiesService.getScriptProperties().setProperty('CACHE_GEN', String(Date.now()));
+  return cacheInfo_();
+}
+
+function cacheGen_() {
+  return PropertiesService.getScriptProperties().getProperty('CACHE_GEN') || '0';
+}
+
 /* ───────────── 카카오 API ───────────── */
 
 function kakaoKey_() {
@@ -381,82 +516,129 @@ function kakaoKey_() {
   return key;
 }
 
-function kakaoGet_(url) {
-  var res = UrlFetchApp.fetch(url, { headers: { Authorization: 'KakaoAK ' + kakaoKey_() }, muteHttpExceptions: true });
-  var code = res.getResponseCode();
-  if (code === 401 || code === 403) throw new Error('카카오 키 인증에 실패했습니다. 키와 사용 설정(지도/로컬, 카카오모빌리티)을 확인하세요.');
-  if (code === 429) throw new Error('카카오 API 일일 호출 한도를 초과했습니다.');
-  if (code !== 200) throw new Error('카카오 API 오류 (' + code + ')');
-  return JSON.parse(res.getContentText());
-}
-
-function kakaoGeocode_(query) {
-  var cache = CacheService.getScriptCache();
-  var ck = 'G_' + md5_(query);
-  var hit = cache.get(ck);
-  if (hit) return JSON.parse(hit);
-
-  var q = encodeURIComponent(query);
-  var data = kakaoGet_('https://dapi.kakao.com/v2/local/search/address.json?size=1&query=' + q);
-  var doc = data.documents && data.documents[0];
-  var point;
-  if (doc) {
-    var region = doc.address || doc.road_address || {};
-    point = { lat: Number(doc.y), lng: Number(doc.x), sido: region.region_1depth_name || firstToken_(doc.address_name), address: doc.address_name };
-  } else {
-    data = kakaoGet_('https://dapi.kakao.com/v2/local/search/keyword.json?size=1&query=' + q);
-    doc = data.documents && data.documents[0];
-    if (!doc) throw new Error('주소를 찾지 못했습니다: "' + query + '"');
-    point = { lat: Number(doc.y), lng: Number(doc.x), sido: firstToken_(doc.address_name), address: doc.address_name + (doc.place_name ? ' (' + doc.place_name + ')' : '') };
-  }
-  point.query = query;
-  cache.put(ck, JSON.stringify(point), 21600);
-  return point;
-}
-
 /**
- * 경로 조회. 비율 방식이면 1종만 조회, API 방식이면 사용하는 차종을 모두 동시에 조회.
+ * 여러 요청을 동시에 보내고, 한도 초과(429)나 일시 오류(5xx)는 1초 쉬고 한 번 더 시도합니다.
+ * 반환: [{ code, json }]
  */
-function kakaoRoute_(origin, dest, settings) {
-  var classes = [1];
-  if (settings.toll.mode === 'api') {
-    settings.tons.forEach(function (t) { if (classes.indexOf(Number(t.tollClass)) === -1) classes.push(Number(t.tollClass)); });
-  }
-  var cache = CacheService.getScriptCache();
-  var base = origin.lng + ',' + origin.lat + '_' + dest.lng + ',' + dest.lat;
-  var out = { distanceKm: null, tollByClass: {} };
-  var need = [];
-  classes.forEach(function (c) {
-    var hit = cache.get('R_' + md5_(base + '_' + c));
-    if (hit) { hit = JSON.parse(hit); out.distanceKm = out.distanceKm || hit.km; out.tollByClass[c] = hit.toll; }
-    else need.push(c);
-  });
-  if (need.length) {
-    var key = kakaoKey_();
-    var reqs = need.map(function (c) {
-      return {
-        url: 'https://apis-navi.kakaomobility.com/v1/directions?summary=true&priority=RECOMMEND&car_fuel=DIESEL&car_type=' + c +
-          '&origin=' + origin.lng + ',' + origin.lat + '&destination=' + dest.lng + ',' + dest.lat,
-        headers: { Authorization: 'KakaoAK ' + key }, muteHttpExceptions: true
-      };
+function fetchAllKakao_(urls) {
+  var key = kakaoKey_();
+  var out = new Array(urls.length);
+  var todo = urls.map(function (u, i) { return i; });
+  for (var attempt = 0; attempt < 2 && todo.length; attempt++) {
+    if (attempt > 0) Utilities.sleep(1200);
+    var res = UrlFetchApp.fetchAll(todo.map(function (i) {
+      return { url: urls[i], headers: { Authorization: 'KakaoAK ' + key }, muteHttpExceptions: true };
+    }));
+    var retry = [];
+    res.forEach(function (r, j) {
+      var i = todo[j], code = r.getResponseCode();
+      if ((code === 429 || code >= 500) && attempt === 0) { retry.push(i); return; }
+      var json = null;
+      try { json = JSON.parse(r.getContentText()); } catch (e) { /* 무시 */ }
+      out[i] = { code: code, json: json };
     });
-    UrlFetchApp.fetchAll(reqs).forEach(function (res, i) {
-      var code = res.getResponseCode();
-      if (code !== 200) throw new Error('카카오 길찾기 오류 (' + code + ')');
-      var route = JSON.parse(res.getContentText()).routes[0];
-      if (route.result_code !== 0) throw new Error('경로를 찾지 못했습니다: ' + route.result_msg);
-      var km = route.summary.distance / 1000;
-      var toll = (route.summary.fare && route.summary.fare.toll) || 0;
-      out.distanceKm = out.distanceKm || km;
-      out.tollByClass[need[i]] = toll;
-      cache.put('R_' + md5_(base + '_' + need[i]), JSON.stringify({ km: km, toll: toll }), 21600);
-    });
+    todo = retry;
   }
   return out;
 }
 
+function kakaoError_(code) {
+  if (code === 401 || code === 403) return '카카오 키 인증 실패 (키와 사용 설정을 확인하세요)';
+  if (code === 429) return '카카오 호출 한도 초과 (잠시 후 다시 시도)';
+  return '카카오 API 오류 (' + code + ')';
+}
+
+/** 주소 여러 개 → { 주소: point | {error} } */
+function geocodeMany_(queries) {
+  var uniq = [];
+  var seen = {};
+  queries.forEach(function (q) { if (q && !seen[q]) { seen[q] = true; uniq.push(q); } });
+  var prefix = 'G' + cacheGen_() + '_';
+  var found = cacheGetMany_(prefix, SHEET_GEO_CACHE, GEO_HEADER, uniq, function (row) {
+    return { lat: Number(row[1]), lng: Number(row[2]), sido: String(row[3]), address: String(row[4]) };
+  });
+  var missing = uniq.filter(function (q) { return !found[q]; });
+  if (!missing.length) return found;
+
+  // 1차: 주소 검색
+  var res = fetchAllKakao_(missing.map(function (q) {
+    return 'https://dapi.kakao.com/v2/local/search/address.json?size=1&query=' + encodeURIComponent(q);
+  }));
+  var needKeyword = [];
+  res.forEach(function (r, i) {
+    var q = missing[i];
+    if (r.code !== 200) { found[q] = { error: kakaoError_(r.code) }; return; }
+    var doc = r.json.documents && r.json.documents[0];
+    if (!doc) { needKeyword.push(q); return; }
+    var region = doc.address || doc.road_address || {};
+    found[q] = { lat: Number(doc.y), lng: Number(doc.x), sido: region.region_1depth_name || firstToken_(doc.address_name), address: doc.address_name };
+  });
+
+  // 2차: 주소로 안 나오면 장소(키워드) 검색 — 예) "쿠팡 평택1센터"
+  if (needKeyword.length) {
+    fetchAllKakao_(needKeyword.map(function (q) {
+      return 'https://dapi.kakao.com/v2/local/search/keyword.json?size=1&query=' + encodeURIComponent(q);
+    })).forEach(function (r, i) {
+      var q = needKeyword[i];
+      if (r.code !== 200) { found[q] = { error: kakaoError_(r.code) }; return; }
+      var doc = r.json.documents && r.json.documents[0];
+      if (!doc) { found[q] = { error: '주소를 찾지 못했습니다 ("' + q + '")' }; return; }
+      found[q] = {
+        lat: Number(doc.y), lng: Number(doc.x), sido: firstToken_(doc.address_name),
+        address: doc.address_name + (doc.place_name ? ' (' + doc.place_name + ')' : '')
+      };
+    });
+  }
+
+  var today = now_();
+  cachePutMany_(prefix, SHEET_GEO_CACHE, GEO_HEADER, missing.filter(function (q) { return found[q] && !found[q].error; }).map(function (q) {
+    var p = found[q];
+    return { key: q, value: p, row: [q, p.lat, p.lng, p.sido, p.address, today] };
+  }));
+  return found;
+}
+
+function routeKey_(o, d, tollClass) {
+  return o.lng.toFixed(6) + ',' + o.lat.toFixed(6) + '>' + d.lng.toFixed(6) + ',' + d.lat.toFixed(6) + '#' + tollClass;
+}
+
+/** 경로 여러 개 → { 경로키: { km, toll } | {error} }  (기준 톤수 차종으로 1번씩만 조회) */
+function routeMany_(list, tollClass) {
+  var keys = [], byKey = {};
+  list.forEach(function (x) {
+    var k = routeKey_(x.origin, x.dest, tollClass);
+    if (!byKey[k]) { byKey[k] = x; keys.push(k); }
+  });
+  var prefix = 'R' + cacheGen_() + '_';
+  var found = cacheGetMany_(prefix, SHEET_ROUTE_CACHE, ROUTE_HEADER, keys, function (row) {
+    return { km: Number(row[1]), toll: Number(row[2]) };
+  });
+  var missing = keys.filter(function (k) { return !found[k]; });
+  if (!missing.length) return found;
+
+  var res = fetchAllKakao_(missing.map(function (k) {
+    var x = byKey[k];
+    return 'https://apis-navi.kakaomobility.com/v1/directions?summary=true&priority=RECOMMEND&car_fuel=DIESEL&car_type=' + tollClass +
+      '&origin=' + x.origin.lng + ',' + x.origin.lat + '&destination=' + x.dest.lng + ',' + x.dest.lat;
+  }));
+  var fresh = [];
+  var today = now_();
+  res.forEach(function (r, i) {
+    var k = missing[i];
+    if (r.code !== 200) { found[k] = { error: kakaoError_(r.code) }; return; }
+    var route = r.json && r.json.routes && r.json.routes[0];
+    if (!route || route.result_code !== 0) { found[k] = { error: '경로 없음: ' + ((route && route.result_msg) || '알 수 없음') }; return; }
+    var v = { km: route.summary.distance / 1000, toll: (route.summary.fare && route.summary.fare.toll) || 0 };
+    found[k] = v;
+    fresh.push({ key: k, value: v, row: [k, v.km, v.toll, today] });
+  });
+  cachePutMany_(prefix, SHEET_ROUTE_CACHE, ROUTE_HEADER, fresh);
+  return found;
+}
+
 function testKakao_() {
-  var p = kakaoGeocode_('서울특별시 중구 세종대로 110');
+  var p = geocodeMany_(['서울특별시 중구 세종대로 110'])['서울특별시 중구 세종대로 110'];
+  if (p.error) throw new Error(p.error);
   return { message: '카카오 연결 정상: ' + p.address };
 }
 
