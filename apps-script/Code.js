@@ -64,6 +64,7 @@ function resetAdminPassword() {
   if (!u) { notify_('admin 계정이 없습니다. 먼저 "초기 설정"을 실행하세요.'); return; }
   setPassword_(u.row, temp, true);
   setUserCell_(u.row, '사용여부', '사용');
+  dropUserCache_('admin');
   notify_('admin 임시 비밀번호: ' + temp);
 }
 
@@ -98,7 +99,7 @@ function handle_(req) {
   var allowedBeforeChange = ['me', 'logout', 'changePassword', 'publicSettings'];
   if (session.mustChange && allowedBeforeChange.indexOf(action) === -1) throw new Error('임시 비밀번호입니다. 비밀번호를 먼저 변경하세요.');
   switch (action) {
-    case 'me': return { user: session };
+    case 'me': return { user: session, settings: publicSettings_() };
     case 'logout': CacheService.getScriptCache().remove('S_' + req.token); return {};
     case 'changePassword': return changePassword_(session, req.current, req.next);
     case 'publicSettings': return { settings: publicSettings_() };
@@ -109,6 +110,7 @@ function handle_(req) {
 
   if (session.role !== 'admin') throw new Error('관리자만 사용할 수 있습니다.');
   switch (action) {
+    case 'admin.bootstrap': return { settings: getSettings_(), keys: keyStatus_(), users: listUsers_(), logs: getLogs_(200), cache: cacheInfo_() };
     case 'admin.getSettings': return { settings: getSettings_(), keys: keyStatus_() };
     case 'admin.saveSettings': return saveSettings_(req.settings);
     case 'admin.getTariff': return { tariff: readTariff_() };
@@ -147,7 +149,7 @@ function login_(id, password) {
   var token = Utilities.getUuid() + Utilities.getUuid().replace(/-/g, '');
   var session = { id: id, name: u.data['이름'], role: u.data['권한'], mustChange: u.data['비밀번호변경필요'] === 'Y' };
   cache.put('S_' + token, JSON.stringify({ id: id }), SESSION_SECONDS);
-  return { token: token, user: session };
+  return { token: token, user: session, settings: publicSettings_() };
 }
 
 /** 매 요청마다 계정 시트를 다시 확인 → 사용중지하면 즉시 차단 */
@@ -157,13 +159,32 @@ function requireSession_(token) {
   var raw = cache.get('S_' + token);
   if (!raw) throw new Error('로그인이 만료되었습니다. 다시 로그인하세요.');
   var id = JSON.parse(raw).id;
-  var u = findUser_(id);
-  if (!u || u.data['사용여부'] !== '사용') {
+  var u = cachedUser_(id);
+  if (!u || !u.active) {
     cache.remove('S_' + token);
     throw new Error('사용이 중지된 계정입니다.');
   }
   cache.put('S_' + token, raw, SESSION_SECONDS);
-  return { id: id, name: u.data['이름'], role: u.data['권한'], mustChange: u.data['비밀번호변경필요'] === 'Y' };
+  return { id: id, name: u.name, role: u.role, mustChange: u.mustChange };
+}
+
+/**
+ * 계정 정보를 5분간 서버 캐시에 둡니다. (매 요청마다 시트를 열지 않도록)
+ * 이 화면에서 계정을 바꾸면 즉시 지워지고, 시트를 직접 고친 경우엔 최대 5분 뒤 반영됩니다.
+ */
+function cachedUser_(id) {
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get('U_' + id);
+  if (hit) return JSON.parse(hit);
+  var u = findUser_(id);
+  if (!u) return null;
+  var v = { name: String(u.data['이름']), role: String(u.data['권한']), active: u.data['사용여부'] === '사용', mustChange: u.data['비밀번호변경필요'] === 'Y' };
+  cache.put('U_' + id, JSON.stringify(v), 300);
+  return v;
+}
+
+function dropUserCache_(id) {
+  CacheService.getScriptCache().remove('U_' + id);
 }
 
 function changePassword_(session, current, next) {
@@ -171,6 +192,7 @@ function changePassword_(session, current, next) {
   if (hash_(current || '', u.data['솔트']) !== u.data['비밀번호해시']) throw new Error('현재 비밀번호가 올바르지 않습니다.');
   checkPasswordRule_(next);
   setPassword_(u.row, next, false);
+  dropUserCache_(session.id);
   return {};
 }
 
@@ -240,6 +262,7 @@ function updateUser_(session, id, patch) {
   if (patch.hasOwnProperty('active')) setUserCell_(u.row, '사용여부', patch.active ? '사용' : '중지');
   if (patch.role) setUserCell_(u.row, '권한', patch.role === 'admin' ? 'admin' : 'user');
   if (patch.name) setUserCell_(u.row, '이름', String(patch.name));
+  dropUserCache_(id);
   return {};
 }
 
@@ -248,6 +271,7 @@ function resetPassword_(id) {
   if (!u) throw new Error('계정을 찾을 수 없습니다.');
   var temp = randomPassword_();
   setPassword_(u.row, temp, true);
+  dropUserCache_(id);
   return { tempPassword: temp };
 }
 

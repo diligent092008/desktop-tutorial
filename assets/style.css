@@ -89,6 +89,7 @@ h3 { font-size: 16px; font-weight: 750; }
 .btn-danger { color: var(--red); border-color: rgba(224, 71, 46, .35); }
 .btn-lg { padding: 15px 22px; font-size: 16px; border-radius: 16px; width: 100%; }
 .btn-sm { padding: 6px 12px; font-size: 12.5px; }
+.spinner.dark { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line-strong); border-top-color: var(--ink); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -2px; margin-right: 4px; }
 .btn .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

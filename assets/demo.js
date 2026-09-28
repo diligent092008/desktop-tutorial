@@ -59,6 +59,13 @@
   function user(id) { var u = store.users.filter(function (u) { return u.id === id; })[0]; if (!u) fail('계정을 찾을 수 없습니다.'); return u; }
   function diesel() { var s = store.settings; return s.fuel.mode === 'auto' ? { price: 1520, source: '데모 경유가' } : { price: Number(s.fuel.manualPrice), source: '관리자 기본값' }; }
 
+  function pubSettings() {
+    var s = store.settings;
+    return { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, quoteFooter: s.quoteFooter, maxKm: s.maxKm };
+  }
+  function userList() {
+    return store.users.map(function (u) { return { id: u.id, name: u.name, role: u.role, active: u.active, mustChange: u.mustChange, createdAt: u.createdAt, lastLogin: u.lastLogin }; });
+  }
   function addLog(me, from, to, km, note) {
     store.logs.unshift({ at: today(), id: me.id, name: me.name, from: from, to: to, km: km, note: note });
     store.logs = store.logs.slice(0, 200); save();
@@ -88,21 +95,20 @@
       u.lastLogin = today(); save();
       var token = Math.random().toString(36).slice(2) + Date.now();
       sessions[token] = u.id; saveSessions();
-      return { token: token, user: { id: u.id, name: u.name, role: u.role, mustChange: u.mustChange } };
+      return { token: token, user: { id: u.id, name: u.name, role: u.role, mustChange: u.mustChange }, settings: pubSettings() };
     }
     var me = session(req.token);
     var s = store.settings;
     if (me.mustChange && ['me', 'logout', 'changePassword', 'publicSettings'].indexOf(req.action) === -1) fail('임시 비밀번호입니다. 비밀번호를 먼저 변경하세요.');
     switch (req.action) {
-      case 'me': return { user: me };
+      case 'me': return { user: me, settings: pubSettings() };
       case 'logout': delete sessions[req.token]; saveSessions(); return {};
       case 'changePassword':
         var cu = user(me.id);
         if (cu.pw !== req.current) fail('현재 비밀번호가 올바르지 않습니다.');
         if (String(req.next || '').length < 8 || !/[A-Za-z]/.test(req.next) || !/[0-9]/.test(req.next)) fail('비밀번호는 영문과 숫자를 포함해 8자 이상이어야 합니다.');
         cu.pw = req.next; cu.mustChange = false; save(); return {};
-      case 'publicSettings':
-        return { settings: { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, quoteFooter: s.quoteFooter, maxKm: s.maxKm } };
+      case 'publicSettings': return { settings: pubSettings() };
       case 'dieselPrice': return diesel();
       case 'quote':
         var one = quoteMany([{ origin: req.origin, dest: req.dest }], req).items[0];
@@ -118,6 +124,7 @@
     }
     if (me.role !== 'admin') fail('관리자만 사용할 수 있습니다.');
     switch (req.action) {
+      case 'admin.bootstrap': return { settings: s, keys: store.keys, users: userList(), logs: store.logs, cache: { addresses: 0, routes: 0 } };
       case 'admin.getSettings': return { settings: s, keys: store.keys };
       case 'admin.saveSettings': store.settings = joilMergeSettings(req.settings); save(); return { settings: store.settings };
       case 'admin.getTariff': return { tariff: store.tariff };

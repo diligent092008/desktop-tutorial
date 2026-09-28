@@ -43,30 +43,61 @@
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
 
+  /* 서버 요청
+   * - 조회성 요청(READ)은 오류·지연 시 1번 자동 재시도, 같은 요청이 동시에 겹치면 하나로 합침
+   * - 저장·변경 요청은 중복 실행을 막기 위해 재시도하지 않음
+   */
+  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo'];
+  var TIMEOUT_MS = 25000;
+  var inflight = {};
+
+  function sendOnce(req) {
+    if (DEMO) return window.JoilDemo.call(req);
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, req.action === 'quoteBatch' || req.action === 'admin.saveTariff' ? 90000 : TIMEOUT_MS) : null;
+    // 캐시·쿠키가 끼어들지 않도록: 매번 고유 주소, 캐시 사용 안 함, 쿠키 안 보냄
+    return fetch(API_URL + (API_URL.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now() + Math.random().toString(36).slice(2, 6), {
+      method: 'POST', body: JSON.stringify(req), cache: 'no-store', credentials: 'omit', redirect: 'follow',
+      signal: ctrl ? ctrl.signal : undefined
+    })
+      .then(function (res) {
+        if (!res.ok) throw retryable('서버 연결 오류 (' + res.status + ')');
+        return res.text();
+      })
+      .then(function (text) {
+        try { return JSON.parse(text); } catch (e) {
+          throw retryable('서버가 잠시 응답하지 못했습니다. 잠시 후 다시 시도하세요.');
+        }
+      })
+      .catch(function (err) {
+        if (err && err.name === 'AbortError') throw retryable('서버 응답이 너무 늦습니다. 잠시 후 다시 시도하세요.');
+        if (err && /Failed to fetch|NetworkError|Load failed/.test(err.message)) throw retryable('서버에 연결할 수 없습니다. 인터넷 연결을 확인하세요.');
+        throw err;
+      })
+      .then(function (data) {
+        if (timer) clearTimeout(timer);
+        if (!data.ok) throw new Error(data.error || '알 수 없는 오류');
+        return data;
+      }, function (err) {
+        if (timer) clearTimeout(timer);
+        throw err;
+      });
+  }
+
+  function retryable(msg) { var e = new Error(msg); e.retry = true; return e; }
+
   function api(action, payload) {
     var req = Object.assign({ action: action, token: state.token }, payload || {});
-    var p = DEMO
-      ? window.JoilDemo.call(req)
-      // 캐시·쿠키가 끼어들지 않도록: 매번 고유 주소, 캐시 사용 안 함, 쿠키 안 보냄
-      : fetch(API_URL + (API_URL.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now() + Math.random().toString(36).slice(2, 6), {
-        method: 'POST', body: JSON.stringify(req), cache: 'no-store', credentials: 'omit', redirect: 'follow'
-      })
-        .then(function (res) {
-          if (!res.ok) throw new Error('서버 연결 오류 (' + res.status + ')');
-          return res.text();
-        })
-        .then(function (text) {
-          try { return JSON.parse(text); } catch (e) {
-            throw new Error('서버 응답이 올바르지 않습니다. 브라우저 캐시를 지우거나(Ctrl+Shift+Delete) 시크릿 창에서 시도해 보세요.');
-          }
-        })
-        .then(function (data) {
-          if (!data.ok) throw new Error(data.error || '알 수 없는 오류');
-          return data;
-        });
-    return p.catch(function (err) {
+    var isRead = READ_ACTIONS.indexOf(action) !== -1;
+    var key = isRead ? JSON.stringify(req) : null;
+    if (key && inflight[key]) return inflight[key];
+
+    var p = sendOnce(req).catch(function (err) {
+      if (!isRead || !err.retry) throw err;
+      return new Promise(function (r) { setTimeout(r, 900); }).then(function () { return sendOnce(req); });
+    });
+    p = p.catch(function (err) {
       var msg = (err && err.message) || String(err);
-      if (/Failed to fetch|NetworkError/.test(msg)) msg = '서버에 연결할 수 없습니다. 인터넷 또는 서버 주소를 확인하세요.';
       if (/알 수 없는 요청/.test(msg)) msg = '서버 코드가 예전 버전입니다. 관리자가 Apps Script 코드를 최신으로 바꾸고 새 버전으로 배포해야 합니다. (SETUP.md "업데이트가 나왔을 때")';
       if (/로그인이 만료|로그인이 필요|사용이 중지/.test(msg) && action !== 'login') {
         clearSession();
@@ -75,7 +106,14 @@
       }
       throw new Error(msg);
     });
+    if (key) {
+      inflight[key] = p;
+      var clear = function () { delete inflight[key]; };
+      p.then(clear, clear);
+    }
+    return p;
   }
+
 
   function toast(msg, type) {
     var box = document.getElementById('toasts');
@@ -164,15 +202,15 @@
 
   function clearSession() {
     state.token = null; state.user = null; state.pub = null;
-    state.admin = { tab: 'basic', settings: null, keys: null, tariff: null, tariffDirty: false, settingsDirty: false, page: 0, users: null, logs: null };
+    state.admin = { tab: 'basic', loaded: false, settings: null, keys: null, tariff: null, tariffDirty: false, settingsDirty: false, page: 0, users: null, logs: null, cache: null };
     state.calc.result = null;
     state.calc.baseTon = null;
     state.bulk.results = []; state.bulk.meta = null; state.bulk.cancel = true;
     storage('del', 'joil-token');
   }
 
-  function afterLogin() {
-    return api('publicSettings').then(function (r) {
+  function afterLogin(settings) {
+    return (settings ? Promise.resolve({ settings: settings }) : api('publicSettings')).then(function (r) {
       state.pub = r.settings;
       var saved = local('get', 'joil-tons');
       state.calc.tons = Array.isArray(saved) ? saved.filter(function (t) { return state.pub.tons.indexOf(t) !== -1; }) : state.pub.tons.slice();
@@ -247,7 +285,7 @@
         state.token = r.token; state.user = r.user;
         storage('set', 'joil-token', r.token);
         state.view = 'calc';
-        return afterLogin();
+        return afterLogin(r.settings);
       }).catch(function (err) {
         busy(btn, false);
         toast(err.message, 'err');
@@ -866,27 +904,68 @@
     ['keys', 'API 키', 'var(--ink-2)']
   ];
 
+  function loadAdmin(force) {
+    var a = state.admin;
+    if (a.loaded && !force) return Promise.resolve();
+    return api('admin.bootstrap').then(function (r) {
+      if (!a.settingsDirty) a.settings = r.settings;
+      a.keys = r.keys; a.users = r.users; a.logs = r.logs; a.cache = r.cache;
+      a.loaded = true;
+      loadTariff(); // 타리프는 크니까 뒤에서 미리 받아 둠
+    });
+  }
+
+  function loadTariff() {
+    var a = state.admin;
+    if (a.tariff) return Promise.resolve();
+    return api('admin.getTariff').then(function (r) {
+      if (!a.tariff) { a.tariff = r.tariff; a.tariffOrig = clone(r.tariff); }
+    });
+  }
+
   function renderAdmin() {
     var a = state.admin;
     $('#main').innerHTML =
       '<div class="admin-grid"><nav class="card rail">' + ADMIN_TABS.map(function (t) {
         return '<button data-tab="' + t[0] + '" class="' + (a.tab === t[0] ? 'on' : '') + '"><span class="dot" style="--c:' + t[2] + '"></span>' + t[1] + '</button>';
-      }).join('') + '</nav><section id="adminBody"><div class="card muted">불러오는 중…</div></section></div>';
-    $$('.rail button').forEach(function (b) { b.onclick = function () { a.tab = b.dataset.tab; renderAdmin(); }; });
+      }).join('') + '</nav><section id="adminBody"></section></div>';
+    $$('.rail button').forEach(function (b) {
+      b.onclick = function () {
+        a.tab = b.dataset.tab;
+        $$('.rail button').forEach(function (x) { x.classList.toggle('on', x === b); });
+        showAdminTab();
+      };
+    });
+    showAdminTab();
+  }
 
-    var need = [];
-    if ((a.tab === 'basic' || a.tab === 'region' || a.tab === 'keys' || a.tab === 'tariff') && !a.settings) {
-      need.push(api('admin.getSettings').then(function (r) { a.settings = r.settings; a.keys = r.keys; }));
+  function adminLoading(msg) {
+    $('#adminBody').innerHTML = '<div class="card"><div class="row-between"><span class="muted"><span class="spinner dark"></span> ' + esc(msg) + '</span></div>' +
+      '<p class="hint" style="margin:10px 0 0">서버가 한동안 쉬었다가 처음 깨어날 때는 몇 초 더 걸릴 수 있어요.</p></div>';
+  }
+
+  function showAdminTab() {
+    var a = state.admin, tab = a.tab;
+    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, logs: adminLogs, keys: adminKeys };
+    var ready = a.loaded && (tab !== 'tariff' || a.tariff);
+    if (ready) {
+      views[tab]();
+      if (tab === 'logs') {
+        // 기록은 계속 쌓이니까 화면은 바로 보여주고 뒤에서 최신으로 갱신
+        api('admin.getLogs', { limit: 200 }).then(function (r) {
+          a.logs = r.logs;
+          if (state.view === 'admin' && a.tab === 'logs') adminLogs();
+        }).catch(function () { /* 조용히 무시 — 새로고침 버튼으로 다시 가능 */ });
+      }
+      return;
     }
-    if (a.tab === 'tariff' && !a.tariff) need.push(api('admin.getTariff').then(function (r) { a.tariff = r.tariff; a.tariffOrig = clone(r.tariff); }));
-    if (a.tab === 'users') need.push(api('admin.listUsers').then(function (r) { a.users = r.users; }));
-    if (a.tab === 'logs') need.push(api('admin.getLogs', { limit: 200 }).then(function (r) { a.logs = r.logs; }));
-
-    Promise.all(need).then(function () {
-      if (state.view !== 'admin' || a.tab !== (($('.rail button.on') || {}).dataset || {}).tab) return;
-      ({ basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, logs: adminLogs, keys: adminKeys })[a.tab]();
+    adminLoading(tab === 'tariff' && a.loaded ? '타리프 불러오는 중…' : '관리자 정보 불러오는 중…');
+    loadAdmin().then(function () { return tab === 'tariff' ? loadTariff() : null; }).then(function () {
+      if (state.view === 'admin' && state.admin.tab === tab) views[tab]();
     }).catch(function (err) {
-      $('#adminBody').innerHTML = '<div class="card"><p style="margin:0">' + esc(err.message) + '</p></div>';
+      if (state.view !== 'admin' || state.admin.tab !== tab) return;
+      $('#adminBody').innerHTML = '<div class="card"><p style="margin:0 0 14px">' + esc(err.message) + '</p><button class="btn btn-primary btn-sm" id="adminRetry">다시 불러오기</button></div>';
+      $('#adminRetry').onclick = showAdminTab;
     });
   }
 
@@ -1171,6 +1250,13 @@
     });
   }
 
+  function refreshUsers() {
+    return api('admin.listUsers').then(function (r) {
+      state.admin.users = r.users;
+      if (state.view === 'admin' && state.admin.tab === 'users') adminUsers();
+    }).catch(function (err) { toast(err.message, 'err'); });
+  }
+
   function adminUsers() {
     var a = state.admin;
     var body = $('#adminBody');
@@ -1212,7 +1298,7 @@
       var id = $('#nuId').value.trim();
       busy(btn, true, '발급 중…');
       api('admin.createUser', { id: id, name: $('#nuName').value, role: $('#nuRole').value }).then(function (r) {
-        a.users = null; renderAdmin();
+        refreshUsers();
         showTemp('계정을 발급했습니다', id, r.tempPassword);
       }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
     };
@@ -1222,7 +1308,7 @@
         if (!confirm(id + ' 계정의 비밀번호를 초기화할까요?')) return;
         busy(b, true, '…');
         api('admin.resetPassword', { id: id }).then(function (r) {
-          a.users = null; renderAdmin(); showTemp('비밀번호를 초기화했습니다', id, r.tempPassword);
+          refreshUsers(); showTemp('비밀번호를 초기화했습니다', id, r.tempPassword);
         }).catch(function (err) { busy(b, false); toast(err.message, 'err'); });
       };
     });
@@ -1233,7 +1319,7 @@
         busy(b, true, '…');
         api('admin.updateUser', { id: id, patch: { active: !active } }).then(function () {
           toast(active ? '사용을 중지했습니다.' : '다시 사용하도록 했습니다.');
-          a.users = null; renderAdmin();
+          refreshUsers();
         }).catch(function (err) { busy(b, false); toast(err.message, 'err'); });
       };
     });
@@ -1249,7 +1335,13 @@
           return '<tr style="--i:' + Math.min(i, 20) + '"><td class="small muted">' + esc(l.at) + '</td><td style="text-align:left">' + esc(l.name) + ' <span class="muted small">' + esc(l.id) + '</span></td>' +
             '<td style="text-align:left;white-space:normal;min-width:180px">' + esc(l.from) + '</td><td style="text-align:left;white-space:normal;min-width:180px">' + esc(l.to) + (l.note ? ' <span class="badge off">' + esc(l.note) + '</span>' : '') + '</td><td class="num">' + (l.km === '' || l.km == null ? '–' : esc(l.km) + 'km') + '</td></tr>';
         }).join('') + '</tbody></table></div>' : '<p class="muted" style="margin:0">아직 조회 기록이 없습니다.</p>') + '</div>';
-    $('#logReload').onclick = function () { state.admin.logs = null; renderAdmin(); };
+    $('#logReload').onclick = function () {
+      var btn = this; busy(btn, true, '불러오는 중…');
+      api('admin.getLogs', { limit: 200 }).then(function (r) {
+        state.admin.logs = r.logs;
+        if (state.view === 'admin' && state.admin.tab === 'logs') adminLogs();
+      }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+    };
     $('#logCsv').onclick = function () {
       downloadCsv('조일ver1_조회기록_' + today() + '.csv', [['일시', '아이디', '이름', '상차지', '하차지', '거리(km)', '비고']].concat(logs.map(function (l) { return [l.at, l.id, l.name, l.from, l.to, l.km, l.note]; })));
     };
@@ -1280,11 +1372,11 @@
       }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
     };
     function showCache(c) { var el = $('#cacheInfo'); if (el) el.textContent = '주소 ' + won(c.addresses) + '개 · 경로 ' + won(c.routes) + '개 저장됨'; }
-    api('admin.cacheInfo').then(function (r) { showCache(r.cache); }).catch(function () { var el = $('#cacheInfo'); if (el) el.textContent = ''; });
+    if (state.admin.cache) showCache(state.admin.cache);
     $('#clearCache').onclick = function () {
       if (!confirm('저장된 주소·경로를 모두 지울까요? 다음 조회부터 카카오 호출이 다시 늘어납니다.')) return;
       var btn = this; busy(btn, true, '비우는 중…');
-      api('admin.clearCache').then(function (r) { showCache(r.cache); toast('캐시를 비웠습니다.'); })
+      api('admin.clearCache').then(function (r) { state.admin.cache = r.cache; showCache(r.cache); toast('캐시를 비웠습니다.'); })
         .catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
     };
     $('#testKakao').onclick = function () {
@@ -1301,8 +1393,12 @@
 
   if (state.token) {
     app.innerHTML = '<div class="login-wrap"><div class="muted">불러오는 중…</div></div>';
-    api('me').then(function (r) { state.user = r.user; return afterLogin(); })
-      .catch(function () { clearSession(); render(); });
+    api('me').then(function (r) { state.user = r.user; return afterLogin(r.settings); })
+      .catch(function (err) {
+        // 네트워크 문제일 때는 로그인 정보를 지우지 않고 다시 시도할 수 있게
+        if (/만료|필요|중지/.test(err.message)) { clearSession(); render(); return; }
+        app.innerHTML = '<div class="login-wrap"><div class="card" style="max-width:420px;text-align:center"><p style="margin:0 0 14px">' + esc(err.message) + '</p><button class="btn btn-primary" onclick="location.reload()">다시 시도</button></div></div>';
+      });
   } else {
     render();
   }
