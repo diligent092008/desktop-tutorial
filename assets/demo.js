@@ -30,6 +30,9 @@
   store.snaps = store.snaps || {}; store.quotes = store.quotes || [];
   store.settings = joilMergeSettings(store.settings);
   var sessions = loadSessions();
+  var anData = {}, anIndex = [], anMap = [], anLog = []; // 분석 데이터는 용량이 커서 메모리에만 (새로고침하면 사라짐)
+  function permsOf(u) { return u.role === 'admin' ? ['quote', 'analysis', 'admin'] : (u.perms || ['quote']); }
+  function needPerm(me, p) { if (me.perms.indexOf(p) === -1) fail(p === 'analysis' ? '분석 메뉴 권한이 없습니다. 관리자에게 요청하세요.' : '견적 메뉴 권한이 없습니다. 관리자에게 요청하세요.'); }
 
   function loadSessions() { try { return JSON.parse(sessionStorage.getItem('joil-demo-sessions') || '{}'); } catch (e) { return {}; } }
   function saveSessions() { try { sessionStorage.setItem('joil-demo-sessions', JSON.stringify(sessions)); } catch (e) { /* 무시 */ } }
@@ -57,7 +60,7 @@
     if (!id) fail('로그인이 만료되었습니다. 다시 로그인하세요.');
     var u = store.users.filter(function (u) { return u.id === id; })[0];
     if (!u || !u.active) fail('사용이 중지된 계정입니다.');
-    return { id: u.id, name: u.name, role: u.role, mustChange: u.mustChange };
+    return { id: u.id, name: u.name, role: u.role, mustChange: u.mustChange, perms: permsOf(u) };
   }
   function user(id) { var u = store.users.filter(function (u) { return u.id === id; })[0]; if (!u) fail('계정을 찾을 수 없습니다.'); return u; }
   function diesel() { var s = store.settings; return s.fuel.mode === 'auto' ? { price: 1520, source: '데모 경유가' } : { price: Number(s.fuel.manualPrice), source: '관리자 기본값' }; }
@@ -67,7 +70,7 @@
     return { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, retentionDays: s.snapshot.retentionDays, quoteFooter: s.quoteFooter, maxKm: s.maxKm };
   }
   function userList() {
-    return store.users.map(function (u) { return { id: u.id, name: u.name, role: u.role, active: u.active, mustChange: u.mustChange, createdAt: u.createdAt, lastLogin: u.lastLogin }; });
+    return store.users.map(function (u) { return { id: u.id, name: u.name, role: u.role, active: u.active, mustChange: u.mustChange, createdAt: u.createdAt, lastLogin: u.lastLogin, perms: permsOf(u) }; });
   }
   function addLog(me, from, to, km, note, recordId, type, count) {
     store.logs.unshift({ at: today(), id: me.id, name: me.name, from: from, to: to, km: km, note: note, recordId: recordId || '', type: type || '', count: count || '' });
@@ -123,12 +126,19 @@
       u.lastLogin = today(); save();
       var token = Math.random().toString(36).slice(2) + Date.now();
       sessions[token] = u.id; saveSessions();
-      return { token: token, user: { id: u.id, name: u.name, role: u.role, mustChange: u.mustChange }, settings: pubSettings() };
+      return { token: token, user: { id: u.id, name: u.name, role: u.role, mustChange: u.mustChange, perms: permsOf(u) }, settings: pubSettings() };
     }
     var me = session(req.token);
     var s = store.settings;
     if (me.mustChange && ['me', 'logout', 'changePassword', 'publicSettings'].indexOf(req.action) === -1) fail('임시 비밀번호입니다. 비밀번호를 먼저 변경하세요.');
+    if (['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete'].indexOf(req.action) !== -1) needPerm(me, 'quote');
+    if (req.action === 'analysis.index' || req.action === 'analysis.load') needPerm(me, 'analysis');
     switch (req.action) {
+      case 'analysis.index':
+        anLog.unshift({ at: today(), id: me.id, name: me.name, n: anIndex.length });
+        return { index: anIndex.slice(), mapping: anMap.slice(), businesses: ['조일물류', '명일로지스', '조일로지스'] };
+      case 'analysis.load':
+        var dd = {}; (req.keys || []).forEach(function (k) { if (anData[k]) dd[k] = anData[k]; }); return { data: dd };
       case 'me': return { user: me, settings: pubSettings() };
       case 'logout': delete sessions[req.token]; saveSessions(); return {};
       case 'changePassword':
@@ -208,21 +218,31 @@
         if (err) fail(err);
         store.tariff = { tons: s.tons.map(function (t) { return t.name; }), rows: req.tariff.rows.map(function (r) { return r.map(Number); }) };
         save(); return {};
-      case 'admin.listUsers':
-        return { users: store.users.map(function (u) { return { id: u.id, name: u.name, role: u.role, active: u.active, mustChange: u.mustChange, createdAt: u.createdAt, lastLogin: u.lastLogin }; }) };
+      case 'admin.listUsers': return { users: userList() };
+      case 'analysis.upload':
+        if (['조일물류', '명일로지스', '조일로지스'].indexOf(req.biz) === -1) fail('사업자를 선택하세요.');
+        var key = req.biz + '|' + req.month;
+        anData[key] = req.data;
+        anIndex = anIndex.filter(function (x) { return x.key !== key; });
+        anIndex.push({ key: key, biz: req.biz, month: req.month, count: req.count, sales: req.sales || 0, buys: req.buys || 0, fileName: req.fileName || '', uploadedAt: today(), uploader: me.name + ' (' + me.id + ')' });
+        return { key: key };
+      case 'analysis.delete': delete anData[req.key]; anIndex = anIndex.filter(function (x) { return x.key !== req.key; }); return {};
+      case 'analysis.saveMap': anMap = (req.map || []).slice(); return { count: anMap.length };
+      case 'analysis.accessLog': return { logs: anLog.slice(0, 50) };
       case 'admin.createUser':
         var id = String(req.id || '').trim();
         if (!/^[A-Za-z0-9_.-]{3,30}$/.test(id)) fail('아이디는 영문/숫자 3~30자로 입력하세요.');
         if (!String(req.name || '').trim()) fail('이름을 입력하세요.');
         if (store.users.some(function (u) { return u.id === id; })) fail('이미 있는 아이디입니다.');
         var t = temp();
-        store.users.push({ id: id, name: String(req.name).trim(), role: req.role === 'admin' ? 'admin' : 'user', active: true, mustChange: true, pw: t, createdAt: today(), lastLogin: '' });
+        store.users.push({ id: id, name: String(req.name).trim(), role: req.role === 'admin' ? 'admin' : 'user', perms: req.perms || ['quote'], active: true, mustChange: true, pw: t, createdAt: today(), lastLogin: '' });
         save(); return { tempPassword: t };
       case 'admin.updateUser':
         var uu = user(req.id), p = req.patch || {};
         if (uu.id === me.id && (p.active === false || p.role === 'user')) fail('본인 계정은 중지하거나 권한을 낮출 수 없습니다.');
         if (p.hasOwnProperty('active')) uu.active = !!p.active;
         if (p.role) uu.role = p.role === 'admin' ? 'admin' : 'user';
+        if (Array.isArray(p.perms)) uu.perms = p.perms.filter(function (x) { return x === 'quote' || x === 'analysis'; });
         save(); return {};
       case 'admin.resetPassword':
         var ru = user(req.id), tp = temp(); ru.pw = tp; ru.mustChange = true; save(); return { tempPassword: tp };

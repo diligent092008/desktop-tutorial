@@ -346,7 +346,78 @@ table.data.hist .wrap { white-space: normal; min-width: 160px; line-height: 1.4;
 .qmeta .snap-info { flex-direction: column; gap: 6px; margin-top: 0; }
 textarea.input.memo { min-height: 90px; font-family: var(--font); font-size: 14px; }
 
+/* ── 권한 칩 ── */
+.perm-chips .chip { padding: 4px 10px; font-size: 12px; }
+.chip.ghost { background: transparent; border-style: dashed; color: var(--muted); }
+.ok-text { color: #2C7040; font-weight: 700; }
+.err-text { color: #A8331F; font-weight: 650; }
+
+/* ── 분석 데이터 업로드 ── */
+.dropzone { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; padding: 28px 16px; border: 2px dashed var(--line-strong); border-radius: var(--radius-lg); background: var(--panel-2); cursor: pointer; transition: all .2s var(--ease); }
+.dropzone:hover, .dropzone.over { border-color: var(--accent); background: #FFF6EC; }
+.dropzone .big-stripes { width: 90px; height: 12px; border-radius: 999px; background: var(--stripes); }
+.anfiles { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.anfile { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; background: var(--panel); }
+.anfile.error { border-color: rgba(224,71,46,.4); background: #FFF4F0; }
+.anfile.done { border-color: rgba(79,168,100,.45); }
+.anfile .fname { word-break: break-all; }
+.anfile-stats { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 8px; font-size: 13px; }
+tr.muted-row td { opacity: .5; }
+table.data.mapt td { vertical-align: middle; }
+
+/* ── 분석 화면 ── */
+.anfilter-row { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; }
+.fgroup { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fgroup.grow { flex: 1; min-width: 240px; }
+.fgroup.grow .input { flex: 1; }
+.flabel { font-size: 12px; font-weight: 800; color: var(--muted); letter-spacing: .02em; }
+.fgroup select.input { width: auto; }
+.anchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.fchip { border: 1px solid var(--line-strong); background: var(--panel-2); border-radius: 999px; padding: 5px 11px; font-size: 12.5px; cursor: pointer; }
+.fchip b { color: var(--muted); margin-right: 3px; }
+.fchip:hover { border-color: var(--red); }
+.kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 16px; }
+.kpi { padding: 16px 18px; }
+.kpi .k { font-size: 12px; font-weight: 800; color: var(--muted); }
+.kpi .v { font-size: 22px; font-weight: 800; margin-top: 4px; }
+.kpi .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.neg { color: #A8331F !important; }
+.an-charts { display: grid; grid-template-columns: 1.7fr 1fr; gap: 16px; margin-top: 16px; }
+.chartbox { position: relative; }
+.chart { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .gridl { stroke: var(--line); stroke-width: 1; }
+.chart .base { stroke: var(--line-strong); stroke-width: 1; }
+.chart .axis { font-size: 10.5px; fill: var(--muted); font-family: var(--font-display); }
+.chart .vlabel { font-size: 12px; fill: var(--ink); font-weight: 800; font-family: var(--font-display); }
+.chart .hit { cursor: crosshair; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: #fff; font-size: 12.5px; line-height: 1.6; padding: 8px 11px; border-radius: 10px; white-space: nowrap; box-shadow: var(--shadow-pop); z-index: 5; }
+.tip i, .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: 0; }
+.legend { display: flex; gap: 14px; font-size: 12.5px; font-weight: 700; color: var(--ink-2); }
+.tabs-line { display: flex; gap: 2px; border-bottom: 1.5px solid var(--line); margin-bottom: 10px; overflow-x: auto; }
+.tabs-line button { border: 0; background: none; padding: 9px 14px; font-weight: 700; font-size: 13.5px; color: var(--muted); cursor: pointer; border-bottom: 2.5px solid transparent; margin-bottom: -1.5px; white-space: nowrap; }
+.tabs-line button.on { color: var(--ink); border-bottom-color: var(--accent); }
+.tabs-line .cnt, .tabs-line button .cnt { background: var(--accent); color: #fff; border-radius: 999px; padding: 0 6px; font-size: 11px; }
+table.data.grp th.sortable { cursor: pointer; user-select: none; }
+table.data.grp th.sortable.on { color: var(--ink); }
+table.data.grp th.left, table.data.grp td.left { text-align: left; }
+table.data.grp td.wrap { white-space: normal; min-width: 180px; }
+table.data.grp tr.pick { cursor: pointer; }
+table.data.grp tr.picked td { background: rgba(244,190,46,.16); }
+.pickbox { display: inline-grid; place-items: center; width: 16px; height: 16px; border: 1.5px solid var(--line-strong); border-radius: 4px; margin-right: 8px; font-size: 11px; font-weight: 900; vertical-align: -3px; }
+tr.picked .pickbox { background: var(--ink); color: #fff; border-color: var(--ink); }
+.sharebar { display: inline-block; width: 70%; height: 8px; background: var(--bg-2); border-radius: 999px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
+.sharebar i { display: block; height: 100%; background: #2A9DB0; border-radius: 999px; }
+table.data.detailt td { font-size: 12.5px; }
+table.data.detailt td.wrap { white-space: normal; min-width: 120px; }
+.cplist { max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.cpitem { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; cursor: pointer; }
+.cpitem:hover { background: var(--panel-2); }
+.cpitem.on { background: rgba(244,190,46,.18); }
+.cpitem .nm { flex: 1; font-weight: 650; }
+
 @media (max-width: 980px) {
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .an-charts { grid-template-columns: 1fr; }
   .qedit { grid-template-columns: 1fr; }
   .bulk-grid { grid-template-columns: 1fr; gap: 8px; }
   .calc-grid, .admin-grid { grid-template-columns: 1fr; }

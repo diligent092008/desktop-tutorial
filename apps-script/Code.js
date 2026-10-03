@@ -14,7 +14,18 @@ var LOGIN_MAX_FAIL = 5;
 var HASH_ROUNDS = 300;
 var TZ = 'Asia/Seoul';
 
-var USER_COLS = ['아이디', '이름', '권한', '사용여부', '비밀번호해시', '솔트', '비밀번호변경필요', '생성일', '마지막로그인'];
+var USER_COLS = ['아이디', '이름', '권한', '사용여부', '비밀번호해시', '솔트', '비밀번호변경필요', '생성일', '마지막로그인', '메뉴권한'];
+
+/* 메뉴 권한: quote(견적 계산·조회기록·견적모음), analysis(매출매입 분석). 관리자는 전부. */
+var PERMS = ['quote', 'analysis'];
+function permsOf_(role, raw) {
+  if (role === 'admin') return ['quote', 'analysis', 'admin'];
+  if (raw == null || raw === '') return ['quote']; // 예전에 만든 계정은 견적만
+  return String(raw).split(',').map(function (x) { return x.trim(); }).filter(function (x) { return PERMS.indexOf(x) !== -1; });
+}
+function requirePerm_(session, perm) {
+  if (session.perms.indexOf(perm) === -1) throw new Error(perm === 'analysis' ? '분석 메뉴 권한이 없습니다. 관리자에게 요청하세요.' : '견적 메뉴 권한이 없습니다. 관리자에게 요청하세요.');
+}
 
 /* ───────────── 메뉴 & 초기 설정 ───────────── */
 
@@ -103,6 +114,14 @@ function handle_(req) {
     case 'logout': CacheService.getScriptCache().remove('S_' + req.token); return {};
     case 'changePassword': return changePassword_(session, req.current, req.next);
     case 'publicSettings': return { settings: publicSettings_() };
+  }
+
+  var QUOTE_ACTIONS = ['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete'];
+  if (QUOTE_ACTIONS.indexOf(action) !== -1) requirePerm_(session, 'quote');
+  if (action === 'analysis.index' || action === 'analysis.load') requirePerm_(session, 'analysis');
+  switch (action) {
+    case 'analysis.index': return analysisIndex_(session);
+    case 'analysis.load': return analysisLoad_(req.keys);
     case 'dieselPrice': return dieselPrice_();
     case 'quote': return quote_(session, req);
     case 'quoteBatch': return quoteBatch_(session, req);
@@ -123,7 +142,7 @@ function handle_(req) {
     case 'admin.getTariff': return { tariff: readTariff_() };
     case 'admin.saveTariff': return saveTariff_(req.tariff);
     case 'admin.listUsers': return { users: listUsers_() };
-    case 'admin.createUser': return createUser_(req.id, req.name, req.role);
+    case 'admin.createUser': return createUser_(req.id, req.name, req.role, req.perms);
     case 'admin.updateUser': return updateUser_(session, req.id, req.patch || {});
     case 'admin.resetPassword': return resetPassword_(req.id);
     case 'admin.getLogs': return { logs: getLogs_(Number(req.limit) || 200) };
@@ -131,6 +150,10 @@ function handle_(req) {
     case 'admin.testKakao': return testKakao_();
     case 'admin.cacheInfo': return { cache: cacheInfo_() };
     case 'admin.clearCache': return { cache: clearCache_() };
+    case 'analysis.upload': return analysisUpload_(session, req);
+    case 'analysis.delete': return analysisDelete_(req.key);
+    case 'analysis.saveMap': return analysisSaveMap_(req.map);
+    case 'analysis.accessLog': return { logs: analysisAccessLog_(50) };
   }
   throw new Error('알 수 없는 요청입니다: ' + action);
 }
@@ -154,7 +177,7 @@ function login_(id, password) {
   setUserCell_(u.row, '마지막로그인', now_());
 
   var token = Utilities.getUuid() + Utilities.getUuid().replace(/-/g, '');
-  var session = { id: id, name: u.data['이름'], role: u.data['권한'], mustChange: u.data['비밀번호변경필요'] === 'Y' };
+  var session = { id: id, name: u.data['이름'], role: u.data['권한'], mustChange: u.data['비밀번호변경필요'] === 'Y', perms: permsOf_(u.data['권한'], u.data['메뉴권한']) };
   cache.put('S_' + token, JSON.stringify({ id: id }), SESSION_SECONDS);
   return { token: token, user: session, settings: publicSettings_() };
 }
@@ -172,7 +195,7 @@ function requireSession_(token) {
     throw new Error('사용이 중지된 계정입니다.');
   }
   cache.put('S_' + token, raw, SESSION_SECONDS);
-  return { id: id, name: u.name, role: u.role, mustChange: u.mustChange };
+  return { id: id, name: u.name, role: u.role, mustChange: u.mustChange, perms: permsOf_(u.role, u.perms) };
 }
 
 /**
@@ -185,7 +208,7 @@ function cachedUser_(id) {
   if (hit) return JSON.parse(hit);
   var u = findUser_(id);
   if (!u) return null;
-  var v = { name: String(u.data['이름']), role: String(u.data['권한']), active: u.data['사용여부'] === '사용', mustChange: u.data['비밀번호변경필요'] === 'Y' };
+  var v = { name: String(u.data['이름']), role: String(u.data['권한']), active: u.data['사용여부'] === '사용', mustChange: u.data['비밀번호변경필요'] === 'Y', perms: u.data['메뉴권한'] == null ? '' : String(u.data['메뉴권한']) };
   cache.put('U_' + id, JSON.stringify(v), 300);
   return v;
 }
@@ -211,7 +234,13 @@ function checkPasswordRule_(pw) {
 
 /* ───────────── 계정 시트 ───────────── */
 
-function usersSheet_() { return SpreadsheetApp.getActive().getSheetByName(SHEET_USERS); }
+function usersSheet_() {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_USERS);
+  if (sh && String(sh.getRange(1, USER_COLS.length).getValue()) !== USER_COLS[USER_COLS.length - 1]) {
+    sh.getRange(1, 1, 1, USER_COLS.length).setValues([USER_COLS]).setFontWeight('bold');
+  }
+  return sh;
+}
 
 function findUser_(id) {
   var sh = usersSheet_();
@@ -239,26 +268,31 @@ function setPassword_(row, pw, mustChange) {
   setUserCell_(row, '비밀번호변경필요', mustChange ? 'Y' : 'N');
 }
 
-function createUserRow_(id, name, role, pw) {
+function createUserRow_(id, name, role, pw, perms) {
   var salt = Utilities.getUuid();
-  usersSheet_().appendRow([id, name, role, '사용', hash_(pw, salt), salt, 'Y', now_(), '']);
+  usersSheet_().appendRow([id, name, role, '사용', hash_(pw, salt), salt, 'Y', now_(), '', perms || 'quote']);
+}
+
+function permsToCell_(list) {
+  var p = (list || []).filter(function (x) { return PERMS.indexOf(x) !== -1; });
+  return p.length ? p.join(',') : 'none';
 }
 
 function listUsers_() {
   var values = usersSheet_().getDataRange().getValues();
   return values.slice(1).map(function (r) {
-    return { id: r[0], name: r[1], role: r[2], active: r[3] === '사용', mustChange: r[6] === 'Y', createdAt: fmt_(r[7]), lastLogin: fmt_(r[8]) };
+    return { id: r[0], name: r[1], role: r[2], active: r[3] === '사용', mustChange: r[6] === 'Y', createdAt: fmt_(r[7]), lastLogin: fmt_(r[8]), perms: permsOf_(r[2], r[9]) };
   });
 }
 
-function createUser_(id, name, role) {
+function createUser_(id, name, role, perms) {
   id = String(id || '').trim();
   name = String(name || '').trim();
   if (!/^[A-Za-z0-9_.-]{3,30}$/.test(id)) throw new Error('아이디는 영문/숫자 3~30자로 입력하세요.');
   if (!name) throw new Error('이름을 입력하세요.');
   if (findUser_(id)) throw new Error('이미 있는 아이디입니다.');
   var temp = randomPassword_();
-  createUserRow_(id, name, role === 'admin' ? 'admin' : 'user', temp);
+  createUserRow_(id, name, role === 'admin' ? 'admin' : 'user', temp, permsToCell_(perms || ['quote']));
   return { tempPassword: temp };
 }
 
@@ -269,6 +303,7 @@ function updateUser_(session, id, patch) {
   if (patch.hasOwnProperty('active')) setUserCell_(u.row, '사용여부', patch.active ? '사용' : '중지');
   if (patch.role) setUserCell_(u.row, '권한', patch.role === 'admin' ? 'admin' : 'user');
   if (patch.name) setUserCell_(u.row, '이름', String(patch.name));
+  if (Array.isArray(patch.perms)) setUserCell_(u.row, '메뉴권한', permsToCell_(patch.perms));
   dropUserCache_(id);
   return {};
 }
@@ -962,6 +997,143 @@ function testKakao_() {
   var p = geocodeMany_(['서울특별시 중구 세종대로 110'])['서울특별시 중구 세종대로 110'];
   if (p.error) throw new Error(p.error);
   return { message: '카카오 연결 정상: ' + p.address };
+}
+
+/* ───────────── 매출매입 분석 ───────────── */
+/*
+ * 사업자 × 월 단위로 저장합니다. (같은 사업자·월을 다시 올리면 덮어씀)
+ * 화면에서 엑셀을 읽어 JSON → gzip → base64 로 보내고, 서버는 그 문자열을 4.5만 자씩 잘라 시트에 보관.
+ * 분석은 권한이 있는 사람의 브라우저에서 이뤄지고, 서버는 저장·전달·권한 확인만 합니다.
+ *  분석목록: 키 | 사업자 | 월 | 건수 | 매출합 | 매입합 | 파일명 | 업로드일시 | 업로더
+ *  분석데이터: 키 | 순번 | 데이터조각
+ *  매출처설정: 원본 매출처 | 표시 이름 | 숨김
+ */
+
+var SHEET_AN_INDEX = '분석목록';
+var SHEET_AN_DATA = '분석데이터';
+var SHEET_AN_MAP = '매출처설정';
+var SHEET_AN_LOG = '분석접속기록';
+var AN_INDEX_HEADER = ['키', '사업자', '월', '건수', '매출합', '매입합', '파일명', '업로드일시', '업로더'];
+var AN_DATA_HEADER = ['키', '순번', '데이터'];
+var AN_MAP_HEADER = ['원본 매출처', '표시 이름', '숨김'];
+var AN_BUSINESSES = ['조일물류', '명일로지스', '조일로지스'];
+var AN_LOAD_MAX = 12; // 한 번 요청에 보내는 사업자·월 묶음 수
+
+function anKey_(biz, month) { return biz + '|' + month; }
+
+function analysisIndex_(session) {
+  var idx = cacheSheet_(SHEET_AN_INDEX, AN_INDEX_HEADER);
+  var list = idx.getLastRow() < 2 ? [] : idx.getRange(2, 1, idx.getLastRow() - 1, AN_INDEX_HEADER.length).getValues().map(function (r) {
+    return { key: String(r[0]), biz: String(r[1]), month: String(r[2]), count: Number(r[3]), sales: Number(r[4]), buys: Number(r[5]), fileName: String(r[6]), uploadedAt: fmt_(r[7]), uploader: String(r[8]) };
+  });
+  var map = cacheSheet_(SHEET_AN_MAP, AN_MAP_HEADER);
+  var mapping = map.getLastRow() < 2 ? [] : map.getRange(2, 1, map.getLastRow() - 1, 3).getValues().map(function (r) {
+    return { raw: String(r[0]), display: String(r[1] || ''), hidden: r[2] === 'Y' || r[2] === true };
+  });
+  var log = cacheSheet_(SHEET_AN_LOG, ['일시', '아이디', '이름', '데이터 묶음 수']);
+  log.appendRow([now_(), session.id, session.name, list.length]);
+  return { index: list, mapping: mapping, businesses: AN_BUSINESSES };
+}
+
+/** 압축된 데이터 문자열을 그대로 돌려줌 (풀기는 브라우저에서) */
+function analysisLoad_(keys) {
+  keys = (keys || []).map(String).slice(0, AN_LOAD_MAX);
+  var sh = cacheSheet_(SHEET_AN_DATA, AN_DATA_HEADER);
+  var out = {};
+  if (!keys.length || sh.getLastRow() < 2) return { data: out };
+  var want = {};
+  keys.forEach(function (k) { want[k] = []; });
+  // 키 열만 먼저 읽어서 필요한 줄만 골라 읽음
+  var keyCol = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
+  var rowsByKey = {};
+  keyCol.forEach(function (r, i) { if (want[r[0]]) (rowsByKey[r[0]] = rowsByKey[r[0]] || []).push(i + 2); });
+  Object.keys(rowsByKey).forEach(function (k) {
+    var rows = rowsByKey[k];
+    var first = rows[0], last = rows[rows.length - 1];
+    var vals = sh.getRange(first, 1, last - first + 1, 3).getValues();
+    var parts = vals.filter(function (v) { return v[0] === k; }).sort(function (a, b) { return a[1] - b[1]; });
+    out[k] = parts.map(function (v) { return String(v[2]); }).join('');
+  });
+  return { data: out };
+}
+
+function analysisUpload_(session, req) {
+  var biz = String(req.biz || '');
+  var month = String(req.month || '');
+  if (AN_BUSINESSES.indexOf(biz) === -1) throw new Error('사업자를 선택하세요.');
+  if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('월 형식이 올바르지 않습니다: ' + month);
+  var data = String(req.data || '');
+  if (!data) throw new Error('데이터가 비어 있습니다.');
+
+  // 서버에서 한 번 풀어서 건수·합계를 직접 확인 (화면이 보낸 숫자를 그대로 믿지 않음)
+  var rows = JSON.parse(Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(data), 'application/x-gzip')).getDataAsString('UTF-8'));
+  if (!Array.isArray(rows) || !rows.length) throw new Error('행이 없습니다.');
+  var sales = 0, buys = 0;
+  rows.forEach(function (r) {
+    if (String(r[0]).slice(0, 7) !== month) throw new Error('다른 달 행이 섞여 있습니다: ' + r[0]);
+    sales += Number(r[5]) || 0; buys += Number(r[6]) || 0;
+  });
+  if (req.count != null && Number(req.count) !== rows.length) throw new Error('건수가 맞지 않습니다. 다시 시도하세요.');
+
+  var key = anKey_(biz, month);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    removeAnalysisRows_(key);
+    var sh = cacheSheet_(SHEET_AN_DATA, AN_DATA_HEADER);
+    var parts = [];
+    for (var i = 0; i < data.length; i += CELL_LIMIT) parts.push([key, parts.length + 1, data.slice(i, i + CELL_LIMIT)]);
+    sh.getRange(sh.getLastRow() + 1, 1, parts.length, 3).setValues(parts);
+    cacheSheet_(SHEET_AN_INDEX, AN_INDEX_HEADER).appendRow([key, biz, month, rows.length, sales, buys, String(req.fileName || '').slice(0, 200), now_(), session.name + ' (' + session.id + ')']);
+  } finally {
+    lock.releaseLock();
+  }
+  return { key: key, count: rows.length, sales: sales, buys: buys };
+}
+
+function removeAnalysisRows_(key) {
+  [[SHEET_AN_DATA, AN_DATA_HEADER], [SHEET_AN_INDEX, AN_INDEX_HEADER]].forEach(function (s) {
+    var sh = cacheSheet_(s[0], s[1]);
+    if (sh.getLastRow() < 2) return;
+    var rows = sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(key).matchEntireCell(true).findAll()
+      .map(function (rg) { return rg.getRow(); }).sort(function (a, b) { return b - a; });
+    // 이어진 줄은 한 번에 지움
+    var i = 0;
+    while (i < rows.length) {
+      var end = rows[i], start = end;
+      while (i + 1 < rows.length && rows[i + 1] === start - 1) { i++; start = rows[i]; }
+      sh.deleteRows(start, end - start + 1);
+      i++;
+    }
+  });
+}
+
+function analysisDelete_(key) {
+  key = String(key || '');
+  if (!key) throw new Error('삭제할 데이터를 선택하세요.');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try { removeAnalysisRows_(key); } finally { lock.releaseLock(); }
+  return {};
+}
+
+function analysisSaveMap_(map) {
+  if (!Array.isArray(map)) throw new Error('매출처 설정 형식이 올바르지 않습니다.');
+  var rows = map.filter(function (m) { return m && String(m.raw || '') !== ''; }).map(function (m) {
+    return [String(m.raw), String(m.display || '').trim().slice(0, 100), m.hidden ? 'Y' : ''];
+  });
+  var sh = cacheSheet_(SHEET_AN_MAP, AN_MAP_HEADER);
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, 3).clearContent();
+  if (rows.length) sh.getRange(2, 1, rows.length, 3).setValues(rows);
+  return { count: rows.length };
+}
+
+function analysisAccessLog_(limit) {
+  var sh = cacheSheet_(SHEET_AN_LOG, ['일시', '아이디', '이름', '데이터 묶음 수']);
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  var n = Math.min(limit, last - 1);
+  return sh.getRange(last - n + 1, 1, n, 4).getValues().reverse().map(function (r) { return { at: fmt_(r[0]), id: r[1], name: r[2], n: r[3] }; });
 }
 
 /* ───────────── 경유가 (오피넷) ───────────── */
