@@ -159,6 +159,20 @@
         if (String(req.next || '').length < 8 || !/[A-Za-z]/.test(req.next) || !/[0-9]/.test(req.next)) fail('비밀번호는 영문과 숫자를 포함해 8자 이상이어야 합니다.');
         cu.pw = req.next; cu.mustChange = false; save(); return {};
       case 'publicSettings': return { settings: pubSettings() };
+      case 'info.diesel': return { now: diesel(), rows: dieselRows.map(function (r) { return [r[0], r[1]]; }) };
+      case 'info.news':
+        var ago = function (h) { return Date.now() - h * 3600000; };
+        return { at: today(), failed: 0, keywords: { include: ['화물연대', '안전운임', '경유 가격', '항만 파업'], exclude: ['교통사고'], watch: ['쿠팡'] }, items: [
+          { title: '[데모] 화물연대, 다음 달 총파업 예고…운송 차질 우려', source: '데모뉴스', at: ago(2), link: 'https://news.google.com/', kws: ['화물연대'], watch: false },
+          { title: '[데모] 안전운임제 재도입 법안 국회 상임위 통과', source: '데모일보', at: ago(5), link: 'https://news.google.com/', kws: ['안전운임', '화물연대'], watch: false },
+          { title: '[데모] 경유 가격 3주 연속 상승…리터당 1,500원 넘어', source: '데모경제', at: ago(9), link: 'https://news.google.com/', kws: ['경유 가격'], watch: false },
+          { title: '[데모] 쿠팡, 충청권 새 물류센터 착공', source: '데모산업', at: ago(20), link: 'https://news.google.com/', kws: ['쿠팡'], watch: true },
+          { title: '[데모] 부산항 컨테이너 부두 노조 부분 파업', source: '데모항만', at: ago(30), link: 'https://news.google.com/', kws: ['항만 파업'], watch: false }
+        ] };
+      case 'info.weather':
+        var dd = function (k) { var d = new Date(); d.setDate(d.getDate() + k); return d.toISOString().slice(0, 10); };
+        var mk = function (name, city, c, tmp, snow, rain) { return { name: name, city: city, now: { temp: tmp, code: c, wind: 10 }, days: [0, 1, 2].map(function (k) { return { date: dd(k), code: k ? 3 : c, max: tmp + 4 - k, min: tmp - 6 + k, pop: k ? 20 : (rain || snow ? 80 : 10), rain: k ? 0 : rain, snow: k ? 0 : snow, wind: 15 }; }) }; };
+        return { at: today(), regions: [mk('경기도', '수원', 2, 14, 0, 0), mk('충청도', '대전', 61, 13, 0, 14), mk('전라도', '광주', 0, 17, 0, 0), mk('강원도', '강릉', 71, 3, 4, 0), mk('경상도', '대구', 1, 16, 0, 0)] };
       case 'dieselPrice': return diesel();
       case 'quote':
         var one = quoteMany([{ origin: req.origin, dest: req.dest }], req).items[0];
@@ -282,6 +296,7 @@
         dieselRows = Object.keys(byD).sort().map(function (k) { return byD[k]; });
         return { count: (req.rows || []).length, status: dieselStatus() };
       case 'analysis.accessLog': return { logs: anLog.slice(0, 50) };
+      case 'admin.saveNews': return { rules: req.rules };
       case 'admin.saveCompanies':
         var nc = {};
         ['조일물류', '명일로지스', '조일로지스'].forEach(function (b) {

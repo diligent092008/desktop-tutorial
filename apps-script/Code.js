@@ -116,6 +116,9 @@ function handle_(req) {
     case 'logout': CacheService.getScriptCache().remove('S_' + req.token); return {};
     case 'changePassword': return changePassword_(session, req.current, req.next);
     case 'publicSettings': return { settings: publicSettings_() };
+    case 'info.diesel': return dieselAll_();
+    case 'info.news': return news_(!!req.force && session.role === 'admin');
+    case 'info.weather': return weather_();
   }
 
   var QUOTE_ACTIONS = ['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete',
@@ -171,6 +174,7 @@ function handle_(req) {
     case 'admin.dieselImport': return dieselImport_(req.rows);
     case 'analysis.accessLog': return { logs: analysisAccessLog_(50) };
     case 'admin.saveCompanies': return saveCompanies_(req.companies);
+    case 'admin.saveNews': return saveNewsRules_(req.rules);
   }
   throw new Error('알 수 없는 요청입니다: ' + action);
 }
@@ -1348,6 +1352,122 @@ function addrList_() {
   var seen = {}, out = [];
   vals.forEach(function (r) { var q = String(r[0]); if (q && !seen[q]) { seen[q] = true; out.push([q, String(r[4] || '')]); } });
   return { list: out, total: n };
+}
+
+/* ───────────── 물류 정보 (유가 · 뉴스 · 날씨) ─────────────
+ * 로그인한 사람 누구나 볼 수 있음 (회사 기밀 아님)
+ * 뉴스: 구글 뉴스 RSS를 키워드별로 모아 제외 단어로 거름 · 30분 캐시
+ * 날씨: Open-Meteo (키 없음) · 도별 대표 지점 · 1시간 캐시
+ */
+
+var NEWS_DEFAULT = {
+  include: ['화물연대', '화물 파업', '안전운임', '화물차 운송', '물류 업계', '운송업계', '경유 가격', '고속도로 통행료', '항만 파업', '컨테이너 운임', '국토부 화물', '택배 노조'],
+  exclude: ['교통사고', '추돌', '음주운전', '사망사고', '부고', '인사'],
+  watch: ['쿠팡', 'CJ대한통운', '한진', '롯데글로벌로지스']
+};
+var WEATHER_REGIONS = [
+  { name: '경기도', city: '수원', lat: 37.26, lon: 127.03 },
+  { name: '충청도', city: '대전', lat: 36.35, lon: 127.38 },
+  { name: '전라도', city: '광주', lat: 35.16, lon: 126.85 },
+  { name: '강원도', city: '강릉', lat: 37.75, lon: 128.88 },
+  { name: '경상도', city: '대구', lat: 35.87, lon: 128.60 }
+];
+
+function newsRules_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('NEWS_RULES');
+  var r = raw ? JSON.parse(raw) : {};
+  return { include: r.include || NEWS_DEFAULT.include, exclude: r.exclude || NEWS_DEFAULT.exclude, watch: r.watch || NEWS_DEFAULT.watch };
+}
+function saveNewsRules_(rules) {
+  var clean = function (list) {
+    var seen = {};
+    return (list || []).map(function (w) { return String(w || '').trim().slice(0, 40); }).filter(function (w) { if (!w || seen[w]) return false; seen[w] = true; return true; }).slice(0, 40);
+  };
+  var r = { include: clean(rules && rules.include), exclude: clean(rules && rules.exclude), watch: clean(rules && rules.watch) };
+  if (!r.include.length && !r.watch.length) throw new Error('모을 키워드를 하나 이상 넣으세요.');
+  PropertiesService.getScriptProperties().setProperty('NEWS_RULES', JSON.stringify(r));
+  CacheService.getScriptCache().remove('NEWS');
+  return { rules: r };
+}
+
+function xmlText_(s) {
+  return String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').trim();
+}
+function parseRss_(xml, keyword, kind) {
+  var out = [], m, re = /<item>([\s\S]*?)<\/item>/g;
+  while ((m = re.exec(xml))) {
+    var it = m[1], g = function (tag) { var x = new RegExp('<' + tag + '[^>]*>([\\s\\S]*?)</' + tag + '>').exec(it); return x ? xmlText_(x[1]) : ''; };
+    var title = g('title'), source = g('source');
+    if (source && title.slice(-(source.length + 3)) === ' - ' + source) title = title.slice(0, -(source.length + 3));
+    var t = Date.parse(g('pubDate'));
+    out.push({ title: title, link: g('link'), source: source, at: isNaN(t) ? 0 : t, kw: keyword, kind: kind });
+  }
+  return out;
+}
+
+function news_(force) {
+  var cache = CacheService.getScriptCache();
+  if (!force) { var hit = cache.get('NEWS'); if (hit) return JSON.parse(hit); }
+  var rules = newsRules_();
+  var qs = rules.include.map(function (k) { return [k, 'topic']; }).concat(rules.watch.map(function (k) { return [k, 'watch']; }));
+  var reqs = qs.map(function (q) {
+    return { url: 'https://news.google.com/rss/search?q=' + encodeURIComponent('"' + q[0] + '" when:7d') + '&hl=ko&gl=KR&ceid=KR:ko', muteHttpExceptions: true };
+  });
+  var res = [];
+  for (var i = 0; i < reqs.length; i += 20) res = res.concat(UrlFetchApp.fetchAll(reqs.slice(i, i + 20)));
+  var byTitle = {}, failed = 0;
+  res.forEach(function (r, i) {
+    if (r.getResponseCode() !== 200) { failed++; return; }
+    parseRss_(r.getContentText(), qs[i][0], qs[i][1]).forEach(function (n) {
+      var key = n.title.replace(/[\s"'“”‘’\[\]…·,.]/g, '').slice(0, 40);
+      if (!key) return;
+      var prev = byTitle[key];
+      if (prev) { if (prev.kws.indexOf(n.kw) === -1) prev.kws.push(n.kw); if (n.kind === 'watch') prev.watch = true; return; }
+      byTitle[key] = { title: n.title, link: n.link, source: n.source, at: n.at, kws: [n.kw], watch: n.kind === 'watch' };
+    });
+  });
+  var ex = rules.exclude;
+  var since = Date.now() - 7 * 86400000;
+  var list = Object.keys(byTitle).map(function (k) { return byTitle[k]; }).filter(function (n) {
+    if (n.at && n.at < since) return false;
+    return !ex.some(function (w) { return n.title.indexOf(w) !== -1; });
+  }).sort(function (a, b) { return b.at - a.at; }).slice(0, 120);
+  var out = { items: list, at: now_(), failed: failed, keywords: rules };
+  var s = JSON.stringify(out);
+  while (s.length > 95000 && out.items.length > 10) { out.items = out.items.slice(0, Math.floor(out.items.length * 0.8)); s = JSON.stringify(out); }
+  try { cache.put('NEWS', s, 1800); } catch (e) { /* 캐시 생략 */ }
+  return out;
+}
+
+function weather_() {
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get('WEATHER'); if (hit) return JSON.parse(hit);
+  var R = WEATHER_REGIONS;
+  var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + R.map(function (r) { return r.lat; }).join(',') + '&longitude=' + R.map(function (r) { return r.lon; }).join(',') +
+    '&current=temperature_2m,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,snowfall_sum,wind_speed_10m_max&timezone=Asia%2FSeoul&forecast_days=3';
+  var r = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  if (r.getResponseCode() !== 200) throw new Error('날씨 정보를 받지 못했습니다. 잠시 후 다시 시도하세요.');
+  var data = JSON.parse(r.getContentText());
+  if (!Array.isArray(data)) data = [data];
+  var out = { at: now_(), regions: R.map(function (reg, i) {
+    var d = data[i] || {}, dl = d.daily || {}, cur = d.current || {};
+    return {
+      name: reg.name, city: reg.city,
+      now: { temp: cur.temperature_2m, code: cur.weather_code, wind: cur.wind_speed_10m },
+      days: (dl.time || []).map(function (t, k) {
+        return { date: t, code: dl.weather_code[k], max: dl.temperature_2m_max[k], min: dl.temperature_2m_min[k], pop: dl.precipitation_probability_max[k], rain: dl.precipitation_sum[k], snow: dl.snowfall_sum[k], wind: dl.wind_speed_10m_max[k] };
+      })
+    };
+  }) };
+  try { cache.put('WEATHER', JSON.stringify(out), 3600); } catch (e) { /* 캐시 생략 */ }
+  return out;
+}
+
+/** 유가 상세: 기록 전체 + 견적에 쓰는 오늘 경유가 */
+function dieselAll_() {
+  var h = dieselHistoryMap_(), dates = Object.keys(h).sort();
+  return { now: dieselPrice_(), rows: dates.map(function (d) { return [d, h[d].price]; }) };
 }
 
 /* ───────────── 경유가 (오피넷) ───────────── */

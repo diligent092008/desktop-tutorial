@@ -16,6 +16,7 @@
     quotes: { q: '', status: '', list: null, detail: null, detailData: null },
     docs: { list: null, biz: '', cat: '', q: '', sel: {}, blobs: {} },
     companies: null, addr: null,
+    info: { tab: 'diesel', range: 90, diesel: null, news: null, weather: null, newsKw: '', newsQ: '' },
     an: null,
     bulk: { mode: 'one', origin: '', dests: '', pairsText: '', results: [], running: false, cancel: false, page: 0, sort: 'no', search: '', filter: 'all', detail: true, meta: null, opts: null },
     admin: { tab: 'basic', settings: null, keys: null, tariff: null, tariffDirty: false, settingsDirty: false, page: 0, users: null, logs: null }
@@ -59,7 +60,7 @@
    * - 조회성 요청(READ)은 오류·지연 시 1번 자동 재시도, 같은 요청이 동시에 겹치면 하나로 합침
    * - 저장·변경 요청은 중복 실행을 막기 위해 재시도하지 않음
    */
-  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory', 'docs.list', 'docs.get', 'addr.list', 'companies', 'diesel.recent'];
+  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory', 'docs.list', 'docs.get', 'addr.list', 'companies', 'diesel.recent', 'info.diesel', 'info.news', 'info.weather'];
   var TIMEOUT_MS = 25000;
   var inflight = {};
 
@@ -226,6 +227,7 @@
     state.quotes = { q: '', status: '', list: null, detail: null, detailData: null };
     state.docs = { list: null, biz: '', cat: '', q: '', sel: {}, blobs: {} };
     state.companies = null; state.addr = null;
+    state.info = { tab: 'diesel', range: 90, diesel: null, news: null, weather: null, newsKw: '', newsQ: '' };
     state.an = newAnState();
     storage('del', 'joil-token');
   }
@@ -248,7 +250,7 @@
 
   function navItems() {
     var items = [];
-    if (can('quote') || can('analysis')) items.push(['home', '홈']);
+    if (can('quote') || can('analysis')) items.push(['home', '홈'], ['info', '물류 정보']);
     if (can('quote')) items.push(['calc', '단건 계산'], ['bulk', '대량 계산'], ['history', '조회기록'], ['quotes', '견적모음'], ['docs', '서류함']);
     if (can('analysis')) items.push(['analysis', '분석']);
     if (state.user.role === 'admin') items.push(['admin', '관리자']);
@@ -267,7 +269,7 @@
       '</nav><div class="spacer"></div>' +
       '<div class="user-chip">' + (DEMO ? '<span class="badge region">데모</span>' : '') +
       (state.user.role === 'admin' ? '<span class="role-badge">ADMIN</span>' : '') +
-      '<span class="avatar">' + esc(String(state.user.name || state.user.id).charAt(0)) + '</span>' +
+      '<span class="avatar" title="' + esc(state.user.name + ' (' + state.user.id + ')') + '">' + esc(String(state.user.name || state.user.id).charAt(0)) + '</span>' +
       '<span class="name">' + esc(state.user.name) + '</span>' +
       '<button class="btn btn-ghost btn-sm' + (state.view === 'help' ? ' on' : '') + '" data-act="help">도움말</button>' +
       '<button class="btn btn-ghost btn-sm" data-act="pw">비밀번호</button>' +
@@ -308,6 +310,7 @@
     else if (state.view === 'docs') renderDocs();
     else if (state.view === 'help') renderHelp();
     else if (state.view === 'home') renderHome();
+    else if (state.view === 'info') renderInfo();
     else renderCalc();
   }
 
@@ -4094,6 +4097,8 @@
       '<div class="home-grid">' +
       (hq ? '<div class="card home-card" id="hcDiesel"><div class="eyebrow">Diesel · 오늘 경유가</div><p class="muted"><span class="spinner dark"></span></p></div>' : '') +
       (ha ? '<div class="card home-card wide2" id="hcAn"><div class="eyebrow">This month · 이번 달 실적</div><p class="muted"><span class="spinner dark"></span> 분석 데이터 불러오는 중…</p></div>' : '') +
+      '<div class="card home-card" id="hcWx"><div class="eyebrow">Weather · 오늘 날씨</div><p class="muted"><span class="spinner dark"></span></p></div>' +
+      '<div class="card home-card wide2" id="hcNews"><div class="eyebrow">News · 물류 뉴스</div><p class="muted"><span class="spinner dark"></span></p></div>' +
       (hq ? '<div class="card home-card" id="hcDocs"><div class="eyebrow">Documents · 만료 임박 서류</div><p class="muted"><span class="spinner dark"></span></p></div>' : '') +
       (hq ? '<div class="card home-card" id="hcQuotes"><div class="eyebrow">Quotes · 최근 내 견적</div><p class="muted"><span class="spinner dark"></span></p></div>' : '') +
       (hq ? '<div class="card home-card" id="hcHist"><div class="eyebrow">History · 최근 조회 (7일)</div><p class="muted"><span class="spinner dark"></span></p></div>' : '') +
@@ -4122,6 +4127,8 @@
       api('history.list', { days: 7, type: '', userId: state.user.id, q: '' }).then(function (r) { if (alive()) homeHist(r.logs); }).catch(fail('#hcHist'));
     }
     if (ha) loadAnalysis().then(function () { if (alive()) homeAn(); }).catch(fail('#hcAn'));
+    infoLoad('weather').then(function (r) { if (alive()) homeWeather(r); }).catch(fail('#hcWx'));
+    infoLoad('news').then(function (r) { if (alive()) homeNews(r); }).catch(fail('#hcNews'));
   }
 
   function sparkline(vals, w, h) {
@@ -4141,12 +4148,13 @@
     var ago = rows.filter(function (x) { return x[0] <= addDays(rows.length ? rows[rows.length - 1][0] : today(), -30); });
     var base = ago.length ? ago[ago.length - 1][1] : (rows[0] && rows[0][1]);
     var diff = lastP != null && base ? lastP - base : null;
-    el.innerHTML = '<div class="eyebrow">Diesel · 오늘 경유가</div>' +
+    el.innerHTML = '<div class="row-between"><div class="eyebrow">Diesel · 오늘 경유가</div><button class="btn btn-sm btn-ghost" data-info="diesel">유가 자세히</button></div>' +
       '<div class="home-big num">' + won(r.now.price) + '<span class="small"> 원/L</span></div>' +
       '<div class="small muted">' + esc(r.now.source) + ' · 견적 밀크런 기준</div>' +
       (rows.length > 1 ? sparkline(rows.map(function (x) { return x[1]; }), 300, 64) +
         '<div class="row-between small"><span class="muted">최근 ' + rows.length + '일 전국 평균</span>' + (diff != null ? '<span>30일 전보다 ' + deltaHtml(diff / base * 100, '%', false) + '</span>' : '') + '</div>'
         : '<p class="small muted" style="margin:10px 0 0">유가 기록이 쌓이면 추이가 보여요.</p>');
+    bindInfoGo(el);
   }
   function addDays(d, k) { var t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + k); return t.toISOString().slice(0, 10); }
 
@@ -4234,6 +4242,205 @@
 
   function bindHomeGo(el) { $$('[data-go]', el).forEach(function (b) { b.onclick = function () { state.view = b.dataset.go; render(); }; }); }
 
+  /* ───────── 물류 정보 (유가 상세 · 뉴스 · 날씨) ───────── */
+
+  var WX = {
+    0: ['맑음', '☀️'], 1: ['대체로 맑음', '🌤️'], 2: ['구름 조금', '⛅'], 3: ['흐림', '☁️'], 45: ['안개', '🌫️'], 48: ['짙은 안개', '🌫️'],
+    51: ['이슬비', '🌦️'], 53: ['이슬비', '🌦️'], 55: ['이슬비', '🌦️'], 56: ['어는 비', '🌧️'], 57: ['어는 비', '🌧️'],
+    61: ['비', '🌧️'], 63: ['비', '🌧️'], 65: ['강한 비', '🌧️'], 66: ['어는 비', '🌧️'], 67: ['어는 비', '🌧️'],
+    71: ['눈', '🌨️'], 73: ['눈', '🌨️'], 75: ['많은 눈', '❄️'], 77: ['싸락눈', '🌨️'], 80: ['소나기', '🌦️'], 81: ['소나기', '🌧️'], 82: ['강한 소나기', '⛈️'],
+    85: ['눈 소나기', '🌨️'], 86: ['강한 눈', '❄️'], 95: ['뇌우', '⛈️'], 96: ['뇌우·우박', '⛈️'], 99: ['뇌우·우박', '⛈️']
+  };
+  function wx(code) { return WX[code] || ['–', '·']; }
+  /** 운행에 영향 줄 만한 날씨만 짧게 */
+  function wxAlerts(d) {
+    var a = [];
+    if (d.snow > 0) a.push(['snow', '눈 ' + (Math.round(d.snow * 10) / 10) + 'cm']);
+    if (d.rain >= 20) a.push(['rain', '비 ' + Math.round(d.rain) + 'mm']);
+    else if (d.rain >= 10 && !d.snow) a.push(['rain', '비 ' + Math.round(d.rain) + 'mm']);
+    if (d.wind >= 50) a.push(['wind', '강풍 ' + Math.round(d.wind) + 'km/h']);
+    if (d.code === 56 || d.code === 57 || d.code === 66 || d.code === 67) a.push(['snow', '도로 결빙 주의']);
+    if (d.min != null && d.min <= -5 && !a.length) a.push(['cold', '한파 ' + Math.round(d.min) + '°']);
+    return a;
+  }
+  function dayName(date, k) { return k === 0 ? '오늘' : k === 1 ? '내일' : k === 2 ? '모레' : String(date).slice(5).replace('-', '/'); }
+  function timeAgo(t) {
+    if (!t) return '';
+    var m = Math.round((Date.now() - t) / 60000);
+    if (m < 60) return Math.max(1, m) + '분 전';
+    if (m < 1440) return Math.round(m / 60) + '시간 전';
+    return Math.round(m / 1440) + '일 전';
+  }
+
+  function infoLoad(kind, force) {
+    var inf = state.info;
+    if (inf[kind] && !force) return Promise.resolve(inf[kind]);
+    return api('info.' + kind, force ? { force: true } : {}).then(function (r) { inf[kind] = r; return r; });
+  }
+
+  function renderInfo() {
+    var inf = state.info;
+    $('#main').innerHTML =
+      '<div class="card info-head"><div><div class="eyebrow">Logistics · 물류 정보</div><h2>오늘의 물류 정보</h2></div>' +
+      '<div class="segmented" id="infoTabs">' + [['diesel', '⛽ 유가'], ['news', '📰 뉴스'], ['weather', '🌤️ 날씨']].map(function (t) {
+        return '<button type="button" data-t="' + t[0] + '" class="' + (inf.tab === t[0] ? 'on' : '') + '">' + t[1] + '</button>';
+      }).join('') + '</div></div><div id="infoBody" style="margin-top:16px"></div>';
+    $$('#infoTabs button').forEach(function (b) { b.onclick = function () { inf.tab = b.dataset.t; $$('#infoTabs button').forEach(function (x) { x.classList.toggle('on', x === b); }); drawInfo(); }; });
+    drawInfo();
+  }
+
+  function drawInfo() {
+    var inf = state.info, box = $('#infoBody'), tab = inf.tab;
+    if (!inf[tab]) {
+      box.innerHTML = '<div class="card muted"><span class="spinner dark"></span> 불러오는 중…</div>';
+      infoLoad(tab).then(function () { if (state.view === 'info' && inf.tab === tab) drawInfo(); })
+        .catch(function (err) { if (state.view === 'info' && inf.tab === tab) box.innerHTML = '<div class="card"><p class="err-text" style="margin:0">' + esc(err.message) + '</p></div>'; });
+      return;
+    }
+    if (tab === 'diesel') infoDiesel(box);
+    else if (tab === 'news') infoNews(box);
+    else infoWeather(box);
+  }
+
+  function infoDiesel(box) {
+    var inf = state.info, r = inf.diesel, rows = r.rows || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="card"><p class="muted" style="margin:0">아직 쌓인 유가 기록이 없어요. 관리자가 유가 자동 기록을 켜면 매일 쌓입니다.</p></div>';
+      return;
+    }
+    var shown = inf.range ? rows.filter(function (x) { return x[0] > addDays(rows[rows.length - 1][0], -inf.range); }) : rows;
+    if (shown.length < 2) shown = rows.slice(-2);
+    var data = shown.map(function (x) { return { d: x[0], p: Number(x[1]) }; });
+    var last = rows[rows.length - 1], prev = rows.length > 1 ? rows[rows.length - 2] : null;
+    var dd = prev ? last[1] - prev[1] : null;
+    var first = data[0], end = data[data.length - 1];
+    var hi = data.reduce(function (a, b) { return b.p > a.p ? b : a; }), lo = data.reduce(function (a, b) { return b.p < a.p ? b : a; });
+    var avg = data.reduce(function (s, x) { return s + x.p; }, 0) / data.length;
+    var chg = end.p - first.p, chgP = first.p ? chg / first.p * 100 : 0;
+    var sign = function (v, dig) { return (v > 0 ? '▲ ' : v < 0 ? '▼ ' : '') + Math.abs(v).toFixed(dig); };
+    box.innerHTML =
+      '<div class="card"><div class="stock-head"><div><div class="muted small">전국 평균 경유 · ' + esc(last[0]) + '</div>' +
+      '<div class="stock-price num">' + Number(last[1]).toFixed(2) + '<span class="small"> 원/L</span></div>' +
+      (dd != null ? '<div class="stock-chg ' + (dd > 0 ? 'up' : dd < 0 ? 'down' : '') + '">' + sign(dd, 2) + '원 (' + sign(dd / prev[1] * 100, 2) + '%) <span class="muted small">전일 대비</span></div>' : '') + '</div>' +
+      '<div class="stock-side"><div><span class="muted small">견적 밀크런에 쓰는 값</span><b class="num">' + won(r.now.price) + '원/L</b><span class="muted small">' + esc(r.now.source) + '</span></div></div></div>' +
+      '<div class="row-between" style="flex-wrap:wrap;gap:10px;margin:18px 0 6px"><div class="segmented" id="dzR">' +
+      [[7, '1주'], [30, '1개월'], [90, '3개월'], [365, '1년'], [1095, '3년'], [0, '전체']].map(function (x) { return '<button type="button" data-r="' + x[0] + '" class="' + (inf.range === x[0] ? 'on' : '') + '">' + x[1] + '</button>'; }).join('') + '</div>' +
+      '<span class="small muted">' + esc(first.d) + ' ~ ' + esc(end.d) + '</span></div>' +
+      '<div id="dzChart">' + priceChart(data) + '</div>' +
+      '<div class="stock-stats">' +
+      '<div><span>기간 등락</span><b class="num ' + (chg > 0 ? 'up' : chg < 0 ? 'down' : '') + '">' + sign(chg, 2) + '원</b><small>' + sign(chgP, 2) + '%</small></div>' +
+      '<div><span>최고</span><b class="num">' + hi.p.toFixed(2) + '</b><small>' + esc(hi.d) + '</small></div>' +
+      '<div><span>최저</span><b class="num">' + lo.p.toFixed(2) + '</b><small>' + esc(lo.d) + '</small></div>' +
+      '<div><span>평균</span><b class="num">' + avg.toFixed(2) + '</b><small>' + data.length + '일</small></div></div></div>' +
+      '<div class="card" style="margin-top:16px"><h3 style="margin-bottom:10px">일별 시세</h3><div class="table-wrap"><table class="data"><thead><tr><th class="left">날짜</th><th>경유 (원/L)</th><th>전일 대비</th><th>등락률</th></tr></thead><tbody>' +
+      rows.slice(-20).reverse().map(function (x, i, arr) {
+        var pv = arr[i + 1] ? arr[i + 1][1] : null, df = pv != null ? x[1] - pv : null;
+        return '<tr><td class="left">' + esc(x[0]) + '</td><td class="num">' + Number(x[1]).toFixed(2) + '</td><td class="num ' + (df > 0 ? 'up' : df < 0 ? 'down' : '') + '">' + (df == null ? '–' : sign(df, 2)) + '</td><td class="num ' + (df > 0 ? 'up' : df < 0 ? 'down' : '') + '">' + (df == null ? '–' : sign(df / pv * 100, 2) + '%') + '</td></tr>';
+      }).join('') + '</tbody></table></div><p class="hint" style="margin:10px 0 0">오피넷 전국 평균 경유가 (매일 아침 기록)</p></div>';
+    $$('#dzR button').forEach(function (b) { b.onclick = function () { inf.range = Number(b.dataset.r); infoDiesel(box); }; });
+    bindChartHover($('#dzChart'), data, function (d) {
+      var i = data.indexOf(d), p = i > 0 ? data[i - 1].p : null;
+      return '<b>' + d.d + '</b><br>' + d.p.toFixed(2) + '원/L' + (p != null ? '<br>' + sign(d.p - p, 2) : '');
+    });
+  }
+
+  function infoNews(box) {
+    var inf = state.info, r = inf.news, items = r.items || [], k = r.keywords || {};
+    var counts = {};
+    items.forEach(function (n) { n.kws.forEach(function (w) { counts[w] = (counts[w] || 0) + 1; }); });
+    var tags = (k.include || []).concat(k.watch || []).filter(function (w) { return counts[w]; });
+    var f = inf.newsKw, q = inf.newsQ || '';
+    var list = items.filter(function (n) {
+      if (f === '__watch' && !n.watch) return false;
+      if (f && f !== '__watch' && n.kws.indexOf(f) === -1) return false;
+      return !q || (n.title + ' ' + n.source).indexOf(q) !== -1;
+    });
+    var isAdmin = state.user.role === 'admin';
+    box.innerHTML = '<div class="card"><div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:12px"><div><h3>물류 뉴스 <span class="muted small">최근 7일 · ' + items.length + '건</span></h3>' +
+      '<p class="muted small" style="margin:4px 0 0">구글 뉴스에서 키워드로 모았어요 · 30분마다 새로 모음 · ' + esc(r.at || '') + (r.failed ? ' · 일부 키워드 실패 ' + r.failed : '') + '</p></div>' +
+      '<div class="actions">' + (isAdmin ? '<button class="btn btn-sm" id="nwSet">키워드 설정</button><button class="btn btn-sm" id="nwRe">지금 새로 모으기</button>' : '') + '</div></div>' +
+      '<div class="toolbar"><div class="chips nw-chips">' +
+      '<button type="button" class="chip' + (!f ? ' on' : '') + '" data-k="">전체 ' + items.length + '</button>' +
+      ((k.watch || []).length ? '<button type="button" class="chip' + (f === '__watch' ? ' on' : '') + '" data-k="__watch">⭐ 관심 업체 ' + items.filter(function (n) { return n.watch; }).length + '</button>' : '') +
+      tags.map(function (w) { return '<button type="button" class="chip' + (f === w ? ' on' : '') + '" data-k="' + esc(w) + '">' + esc(w) + ' ' + counts[w] + '</button>'; }).join('') +
+      '</div><input class="input input-sm" id="nwQ" placeholder="제목·언론사 검색" value="' + esc(q) + '" style="max-width:220px;margin-left:auto"></div>' +
+      (list.length ? '<ul class="news-list">' + list.slice(0, inf.newsLimit || 60).map(function (n) {
+        return '<li><a href="' + esc(n.link) + '" target="_blank" rel="noopener noreferrer">' + (n.watch ? '<span class="badge region">⭐</span> ' : '') + esc(n.title) + '</a>' +
+          '<div class="news-meta"><span>' + esc(n.source || '') + '</span><span>' + timeAgo(n.at) + '</span>' + n.kws.map(function (w) { return '<span class="kw">' + esc(w) + '</span>'; }).join('') + '</div></li>';
+      }).join('') + '</ul>' + (list.length > (inf.newsLimit || 60) ? '<button class="btn btn-sm" id="nwMore" style="margin-top:10px">더 보기</button>' : '')
+        : '<p class="muted">' + (items.length ? '조건에 맞는 기사가 없어요.' : '최근 7일 동안 모인 기사가 없어요.') + '</p>') +
+      '<p class="hint" style="margin:12px 0 0">제목을 누르면 원문 기사가 새 창으로 열려요. 키워드로 모으는 방식이라 관계없는 기사가 섞일 수 있어요.' + (isAdmin ? ' 키워드 설정에서 제외 단어를 추가해 걸러 주세요.' : '') + '</p></div>';
+    $$('.nw-chips .chip', box).forEach(function (c) { c.onclick = function () { inf.newsKw = c.dataset.k; inf.newsLimit = 60; infoNews(box); }; });
+    var st; $('#nwQ', box).oninput = function () { var v = this.value; clearTimeout(st); st = setTimeout(function () { inf.newsQ = v.trim(); infoNews(box); var el = $('#nwQ'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250); };
+    var more = $('#nwMore', box); if (more) more.onclick = function () { inf.newsLimit = (inf.newsLimit || 60) + 60; infoNews(box); };
+    if (isAdmin) {
+      $('#nwRe', box).onclick = function () { var b = this; busy(b, true, '모으는 중…'); infoLoad('news', true).then(function () { toast('뉴스를 새로 모았어요.'); infoNews(box); }).catch(function (err) { busy(b, false); toast(err.message, 'err'); }); };
+      $('#nwSet', box).onclick = function () { openNewsRules(k, function () { infoLoad('news', true).then(function () { if (state.view === 'info') infoNews(box); }); }); };
+    }
+  }
+
+  function openNewsRules(k, done) {
+    var ta = function (id, list, ph) { return '<textarea class="input memo" id="' + id + '" placeholder="' + ph + '">' + esc((list || []).join('\n')) + '</textarea>'; };
+    modal({
+      eyebrow: '물류 정보', title: '뉴스 키워드 설정',
+      body: '<p class="muted small" style="margin:0 0 12px">한 줄에 하나씩 넣으세요. 띄어쓰기까지 정확히 같은 말이 들어간 기사를 모아요.</p>' +
+        '<div class="field"><label>모을 키워드 <span class="muted">(물류 업계 이슈)</span></label>' + ta('nkInc', k.include, '화물연대&#10;안전운임') + '</div>' +
+        '<div class="field"><label>관심 업체 <span class="muted">(⭐ 표시 · 거래처·경쟁사)</span></label>' + ta('nkWatch', k.watch, '쿠팡&#10;CJ대한통운') + '</div>' +
+        '<div class="field"><label>제외 단어 <span class="muted">(제목에 있으면 빼기 · 자잘한 사고 등)</span></label>' + ta('nkEx', k.exclude, '교통사고&#10;추돌') + '</div>',
+      foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="nkSave">저장</button>',
+      onMount: function (m, close) {
+        var lines = function (id) { return $(id, m).value.split(/\n|,/).map(function (x) { return x.trim(); }).filter(Boolean); };
+        $('#nkSave', m).onclick = function () {
+          var b = this; busy(b, true, '저장 중…');
+          api('admin.saveNews', { rules: { include: lines('#nkInc'), watch: lines('#nkWatch'), exclude: lines('#nkEx') } }).then(function () {
+            close(); toast('키워드를 저장했어요. 뉴스를 새로 모아요.'); done();
+          }).catch(function (err) { busy(b, false); toast(err.message, 'err'); });
+        };
+      }
+    });
+  }
+
+  function infoWeather(box) {
+    var r = state.info.weather, regs = r.regions || [];
+    var warn = [];
+    regs.forEach(function (g) { (g.days || []).slice(0, 2).forEach(function (d, k) { wxAlerts(d).forEach(function (a) { warn.push(g.name + ' ' + dayName(d.date, k) + ' ' + a[1]); }); }); });
+    box.innerHTML = (warn.length ? '<div class="wx-warn">⚠️ <b>운행 주의</b> ' + warn.map(esc).join(' · ') + '</div>' : '<div class="wx-ok">오늘·내일 운행에 큰 영향을 줄 날씨는 없어요.</div>') +
+      '<div class="wx-grid">' + regs.map(function (g) {
+        var n = g.now || {};
+        return '<div class="card wx-card"><div class="row-between"><div><h3>' + esc(g.name) + '</h3><span class="muted small">' + esc(g.city) + ' 기준</span></div>' +
+          '<div class="wx-now"><span class="wx-ico">' + wx(n.code)[1] + '</span><b class="num">' + (n.temp != null ? Math.round(n.temp) + '°' : '–') + '</b></div></div>' +
+          '<table class="wx-days"><tbody>' + (g.days || []).map(function (d, k) {
+            var al = wxAlerts(d);
+            return '<tr><th>' + dayName(d.date, k) + '</th><td class="wx-ico">' + wx(d.code)[1] + '</td><td>' + wx(d.code)[0] + '</td>' +
+              '<td class="num"><span class="hi">' + Math.round(d.max) + '°</span> / <span class="lo">' + Math.round(d.min) + '°</span></td><td class="num muted">☔ ' + (d.pop == null ? '–' : d.pop + '%') + '</td></tr>' +
+              (al.length ? '<tr class="wx-al"><td colspan="5">' + al.map(function (a) { return '<span class="wx-tag ' + a[0] + '">' + esc(a[1]) + '</span>'; }).join('') + '</td></tr>' : '');
+          }).join('') + '</tbody></table></div>';
+      }).join('') + '</div>' +
+      '<p class="hint" style="margin:12px 0 0">Open-Meteo 예보 · 도별 대표 도시 기준 · 1시간마다 갱신 · ' + esc(r.at || '') + '</p>';
+  }
+
+  /* 홈 카드: 날씨 · 뉴스 */
+  function homeWeather(r) {
+    var el = $('#hcWx'); if (!el) return;
+    el.innerHTML = '<div class="row-between"><div class="eyebrow">Weather · 오늘 날씨</div><button class="btn btn-sm btn-ghost" data-info="weather">날씨 자세히</button></div>' +
+      '<ul class="home-list">' + (r.regions || []).map(function (g) {
+        var d = (g.days || [])[0] || {}, al = wxAlerts(d).concat(wxAlerts((g.days || [])[1] || {}).map(function (a) { return [a[0], '내일 ' + a[1]]; }));
+        return '<li><button data-info="weather"><span><b>' + esc(g.name) + '</b> ' + wx(d.code)[1] + ' <span class="small">' + wx(d.code)[0] + '</span>' + (al.length ? ' <span class="wx-tag ' + al[0][0] + '">' + esc(al[0][1]) + '</span>' : '') + '</span>' +
+          '<span class="num small"><span class="hi">' + Math.round(d.max) + '°</span>/<span class="lo">' + Math.round(d.min) + '°</span> ☔' + (d.pop == null ? '–' : d.pop + '%') + '</span></button></li>';
+      }).join('') + '</ul>';
+    bindInfoGo(el);
+  }
+  function homeNews(r) {
+    var el = $('#hcNews'); if (!el) return;
+    var items = (r.items || []).slice(0, 6);
+    el.innerHTML = '<div class="row-between"><div class="eyebrow">News · 물류 뉴스</div><button class="btn btn-sm btn-ghost" data-info="news">뉴스 더 보기</button></div>' +
+      (items.length ? '<ul class="home-list news-mini">' + items.map(function (n) {
+        return '<li><a href="' + esc(n.link) + '" target="_blank" rel="noopener noreferrer"><span>' + (n.watch ? '⭐ ' : '') + esc(n.title) + '</span><span class="small muted">' + esc(n.source || '') + ' · ' + timeAgo(n.at) + '</span></a></li>';
+      }).join('') + '</ul>' : '<p class="muted small" style="margin:8px 0 0">최근 모인 기사가 없어요.</p>');
+    bindInfoGo(el);
+  }
+  function bindInfoGo(el) { $$('[data-info]', el).forEach(function (b) { b.onclick = function () { state.info.tab = b.dataset.info; state.view = 'info'; render(); window.scrollTo(0, 0); }; }); }
+
   /* ───────── 도움말 (C2) ───────── */
 
   function renderHelp() {
@@ -4289,6 +4496,11 @@
         '서버 코드가 바뀌는 업데이트가 있으면 SETUP.md의 "업데이트가 나왔을 때" 순서대로 Apps Script에 붙여넣고 새 버전으로 배포하세요.'
       ]]
     );
+    sec.unshift(['info', '물류 정보', [
+      '<b>유가</b>: 오피넷 전국 평균 경유가를 주식 화면처럼 기간별(1주~전체) 그래프로 봅니다. 그래프에 마우스를 올리면 그날 가격과 전일 대비가 나와요.',
+      '<b>뉴스</b>: 화물연대·안전운임·유가 같은 물류 업계 이슈를 구글 뉴스에서 30분마다 모아요. 키워드별로 걸러 보고, 제목을 누르면 원문이 열립니다. ⭐는 관심 업체 기사예요.',
+      '<b>날씨</b>: 경기·충청·전라·강원·경상 도별 오늘·내일·모레 날씨. 눈·많은 비·강풍처럼 운행에 영향을 줄 날씨는 맨 위 "운행 주의"에 모아 보여요.'
+    ].concat(adm ? ['뉴스 키워드(모을 키워드·관심 업체·제외 단어)는 뉴스 탭의 <b>키워드 설정</b>에서 바꿉니다.'] : [])]);
     sec.push(['account', '계정 · 보안', [
       '오른쪽 위 <b>비밀번호</b>에서 언제든 바꿀 수 있습니다. 로그인은 브라우저 창을 닫으면 풀립니다.',
       '비밀번호를 5번 틀리면 10분 동안 잠깁니다. 잊어버렸다면 관리자에게 초기화를 요청하세요.',
@@ -4299,7 +4511,7 @@
       '<div><div class="card help-head"><div class="eyebrow">Guide · 사용 안내</div><h2>JOIL 사용법</h2><p class="muted small" style="margin:6px 0 0">' + esc(state.user.name) + '님이 쓸 수 있는 메뉴만 안내합니다.</p></div>' +
       sec.map(function (s) {
         return '<section class="card help-sec" id="help-' + s[0] + '"><h3>' + s[1] + '</h3><ul>' + s[2].map(function (t) { return '<li>' + t + '</li>'; }).join('') + '</ul>' +
-          (['calc', 'bulk', 'history', 'docs', 'analysis', 'admin'].indexOf(s[0]) !== -1 ? '<button class="btn btn-sm" data-open="' + (s[0] === 'history' ? 'quotes' : s[0]) + '">' + s[1].split(' · ')[0] + ' 열기 →</button>' : '') + '</section>';
+          (['info', 'calc', 'bulk', 'history', 'docs', 'analysis', 'admin'].indexOf(s[0]) !== -1 ? '<button class="btn btn-sm" data-open="' + (s[0] === 'history' ? 'quotes' : s[0]) + '">' + s[1].split(' · ')[0] + ' 열기 →</button>' : '') + '</section>';
       }).join('') + '</div></div>';
     $$('.help-rail button').forEach(function (b) { b.onclick = function () { var t = $('#help-' + b.dataset.sec); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
     $$('.help-sec [data-open]').forEach(function (b) { b.onclick = function () { state.view = b.dataset.open === 'quotes' ? 'history' : b.dataset.open; render(); window.scrollTo(0, 0); }; });

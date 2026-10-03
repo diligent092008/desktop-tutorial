@@ -681,4 +681,58 @@ table.data.qrow td.total .num { font-size: 16px; }
 .nav { min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .nav button { white-space: nowrap; padding: 8px 13px; }
 .user-chip, .user-chip .btn, .user-chip .badge { white-space: nowrap; }
-@media (max-width: 1480px) { .user-chip .name { display: none; } }
+.user-chip .name { display: none; }
+
+/* ── 물류 정보 ── */
+.info-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+.info-head h2 { margin: 2px 0 0; }
+.up { color: #D0352A; } .down { color: #2B62C9; }
+.stock-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.stock-price { font-family: var(--font-display); font-size: 44px; font-weight: 800; line-height: 1.1; margin: 4px 0; }
+.stock-chg { font-weight: 800; font-size: 15px; }
+.stock-side > div { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--panel-2); }
+.stock-side b { font-size: 20px; }
+.stock-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.stock-stats > div { background: var(--panel-2); border-radius: var(--radius-sm); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.stock-stats span, .stock-stats small { color: var(--muted); font-size: 12px; }
+.stock-stats b { font-size: 18px; }
+.news-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.news-list li { padding: 11px 2px; border-bottom: 1px solid var(--line); }
+.news-list a { color: var(--ink); text-decoration: none; font-weight: 650; line-height: 1.45; }
+.news-list a:hover { text-decoration: underline; }
+.news-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.news-meta .kw { background: var(--bg-2); border-radius: 6px; padding: 0 6px; }
+.nw-chips { flex: 1 1 auto; }
+.news-mini a { display: flex; flex-direction: column; gap: 2px; padding: 8px 2px; color: var(--ink); text-decoration: none; }
+.news-mini a > span:first-child { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.news-mini a:hover > span:first-child { text-decoration: underline; }
+.wx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.wx-card h3 { margin: 0; }
+.wx-now { display: flex; align-items: center; gap: 6px; }
+.wx-now b { font-family: var(--font-display); font-size: 30px; }
+.wx-ico { font-size: 22px; }
+.wx-days { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13.5px; }
+.wx-days th, .wx-days td { padding: 7px 4px; border-top: 1px solid var(--line); text-align: left; }
+.wx-days th { width: 40px; color: var(--muted); font-weight: 700; }
+.wx-days .num { text-align: right; white-space: nowrap; }
+.wx-days tr.wx-al td { border-top: 0; padding-top: 0; }
+.hi { color: #D0352A; font-weight: 700; } .lo { color: #2B62C9; font-weight: 700; }
+.wx-tag { display: inline-block; font-size: 11.5px; font-weight: 800; border-radius: 6px; padding: 1px 7px; margin-right: 4px; }
+.wx-tag.snow { background: rgba(43, 98, 201, .14); color: #1F4E9E; }
+.wx-tag.rain { background: rgba(42, 157, 176, .16); color: #176E7C; }
+.wx-tag.wind, .wx-tag.cold { background: rgba(244, 190, 46, .3); color: #6A4E05; }
+.wx-warn { margin-bottom: 16px; padding: 12px 16px; border-radius: var(--radius-sm); background: rgba(224, 71, 46, .09); border: 1px solid rgba(224, 71, 46, .25); font-size: 13.5px; line-height: 1.7; }
+.wx-ok { margin-bottom: 16px; padding: 12px 16px; border-radius: var(--radius-sm); background: rgba(79, 168, 100, .1); font-size: 13.5px; }
+@media (max-width: 640px) {
+  .stock-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stock-price { font-size: 36px; }
+  .stock-side > div { align-items: flex-start; }
+}
+.wx-days td:nth-child(3) { white-space: nowrap; }
+.nav button { padding: 8px 11px; font-size: 13.5px; }
+.topbar .row { gap: 14px; }
+.user-chip { gap: 6px; } .user-chip .btn-sm { padding-left: 9px; padding-right: 9px; }
+@media (max-width: 1240px) and (min-width: 981px) {
+  .user-chip .role-badge, .user-chip .badge.region { display: none; }
+  .brand-txt small { display: none; }
+}
