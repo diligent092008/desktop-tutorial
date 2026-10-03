@@ -512,7 +512,7 @@
       api('quote', Object.assign({ origin: c.origin, dest: c.dest }, quoteOptions()))
         .then(function (r) {
           if (!r.result.milkrun) throw new Error('서버 코드가 예전 버전입니다. 관리자가 Apps Script 코드를 최신으로 바꾸고 새 버전으로 배포해야 합니다. (SETUP.md "업데이트가 나왔을 때")');
-          c.result = r.result; c.recordId = r.recordId || null; renderResult(true);
+          c.result = r.result; c.recordId = r.recordId || null; c.adj = newAdj(); c.adjEdit = false; renderResult(true);
           addrRemember([[c.origin.trim(), r.result.origin.address], [c.dest.trim(), r.result.dest.address]]);
         })
         .catch(function (err) { toast(err.message, 'err'); })
@@ -546,9 +546,92 @@
       '</div></div>';
   }
 
+  /* ───────── 금액 조정 (행·열·칸) ─────────
+   * adj = { rows: { 번호: 금액 }, cols: { 톤수: 금액 }, cells: { '번호|톤수': 최종 금액 } }
+   * 최종 금액 = 칸 직접 입력값 ?? (기본 금액 + 행 조정 + 열 조정)
+   */
+  function newAdj() { return { rows: {}, cols: {}, cells: {} }; }
+  function adjOf(h) {
+    if (!h.adj) h.adj = newAdj();
+    ['rows', 'cols', 'cells'].forEach(function (k) { if (!h.adj[k]) h.adj[k] = {}; });
+    return h.adj;
+  }
+  function adjN(adj) { return adj ? Object.keys(adj.rows || {}).length + Object.keys(adj.cols || {}).length + Object.keys(adj.cells || {}).length : 0; }
+  function adjCalc(adj, no, ton, base) { return base + ((adj && adj.rows && adj.rows[no]) || 0) + ((adj && adj.cols && adj.cols[ton]) || 0); }
+  function adjPrice(adj, no, ton, base) {
+    if (base == null) return null;
+    var k = no + '|' + ton;
+    if (adj && adj.cells && adj.cells.hasOwnProperty(k)) return adj.cells[k];
+    return adjCalc(adj, no, ton, base);
+  }
+  function signWon(v) { return (v > 0 ? '+' : v < 0 ? '−' : '') + won(Math.abs(v)); }
+  /** 톤수 금액 칸 (보기·조정 모드 공용) */
+  function adjTd(adj, edit, no, ton, base, cls) {
+    var v = adjPrice(adj, no, ton, base), k = no + '|' + ton;
+    var fixed = !!(adj && adj.cells && adj.cells.hasOwnProperty(k)), moved = !fixed && v !== base;
+    var tip = fixed ? '직접 입력 · 계산값 ' + won(adjCalc(adj, no, ton, base)) : moved ? '기본 ' + won(base) + ' · 조정 ' + signWon(v - base) : '';
+    var c = (cls || '') + (fixed ? ' adj-fix' : moved ? ' adj-on' : '');
+    if (edit) return '<td class="' + c + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '><input class="adj-in adj-cell num" data-k="' + esc(k) + '" value="' + won(v) + '" inputmode="numeric"></td>';
+    return '<td class="' + c + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + won(v) + '</td>';
+  }
+  function adjColTag(adj, ton) { var v = adj && adj.cols && adj.cols[ton]; return v ? '<span class="adj-tag">' + signWon(v) + '</span>' : ''; }
+  function adjRowTd(adj, edit, no) {
+    var v = (adj && adj.rows && adj.rows[no]) || 0;
+    if (edit) return '<td class="adj-rowc"><input class="adj-in adj-row num" data-no="' + no + '" value="' + (v ? signWon(v).replace('−', '-') : '') + '" placeholder="±0" inputmode="numeric"></td>';
+    return '<td class="adj-rowc num">' + (v ? '<span class="adj-tag">' + signWon(v) + '</span>' : '<span class="muted">–</span>') + '</td>';
+  }
+  function adjColInputs(adj, tons) {
+    return tons.map(function (t) {
+      var v = (adj.cols && adj.cols[t]) || 0;
+      return '<th class="adj-colc"><input class="adj-in adj-col num" data-ton="' + esc(t) + '" value="' + (v ? signWon(v).replace('−', '-') : '') + '" placeholder="±0" inputmode="numeric"></th>';
+    }).join('');
+  }
+  function parseWon(s) { s = String(s == null ? '' : s).replace(/[,\s원+]/g, '').replace('−', '-'); if (s === '' || s === '-') return null; var n = Math.round(Number(s)); return isFinite(n) ? n : NaN; }
+  /** 조정 입력칸 연결. baseOf(no, ton) → 기본 금액 */
+  function bindAdj(box, adj, baseOf, done) {
+    $$('.adj-col', box).forEach(function (el) {
+      el.onchange = function () { var v = parseWon(el.value); if (isNaN(v)) return toast('숫자로 입력하세요.', 'err'); if (v) adj.cols[el.dataset.ton] = v; else delete adj.cols[el.dataset.ton]; done('col'); };
+    });
+    $$('.adj-row', box).forEach(function (el) {
+      el.onchange = function () { var v = parseWon(el.value); if (isNaN(v)) return toast('숫자로 입력하세요.', 'err'); if (v) adj.rows[el.dataset.no] = v; else delete adj.rows[el.dataset.no]; done('row'); };
+    });
+    $$('.adj-cell', box).forEach(function (el) {
+      el.onchange = function () {
+        var k = el.dataset.k, p = k.split('|'), base = baseOf(p[0], p.slice(1).join('|')), v = parseWon(el.value);
+        if (isNaN(v)) return toast('숫자로 입력하세요.', 'err');
+        if (v == null || v === adjCalc(adj, p[0], p.slice(1).join('|'), base)) delete adj.cells[k]; else adj.cells[k] = v;
+        done('cell');
+      };
+    });
+    $$('.adj-in', box).forEach(function (el) { el.onkeydown = function (e) { if (e.key === 'Enter') el.blur(); }; el.onfocus = function () { el.select(); }; });
+  }
+  /** 조정 내용 요약 (기록용) */
+  function adjNote(prev, next) {
+    prev = prev || newAdj(); next = next || newAdj();
+    var out = [];
+    var keys = function (o) { return Object.keys(o || {}); };
+    keys(Object.assign({}, prev.cols, next.cols)).forEach(function (t) { var a = (prev.cols || {})[t] || 0, b = (next.cols || {})[t] || 0; if (a !== b) out.push(t + ' 열 ' + (b ? signWon(b) : '해제')); });
+    keys(Object.assign({}, prev.rows, next.rows)).forEach(function (n) { var a = (prev.rows || {})[n] || 0, b = (next.rows || {})[n] || 0; if (a !== b) out.push(n + '번 행 ' + (b ? signWon(b) : '해제')); });
+    var cp = keys(prev.cells), cn = keys(next.cells), ch = 0;
+    keys(Object.assign({}, prev.cells, next.cells)).forEach(function (k) { if ((prev.cells || {})[k] !== (next.cells || {})[k]) ch++; });
+    if (ch) out.push('칸 직접 입력 ' + ch + '곳 변경 (' + cn.length + '곳 적용 중)');
+    if (!out.length) return '변경 없음';
+    var s = out.slice(0, 8).join(', ');
+    return out.length > 8 ? s + ' 외 ' + (out.length - 8) + '건' : s;
+  }
+  function adjToolbar(h, edit) {
+    var n = adjN(h.adj);
+    return '<button type="button" class="btn btn-sm' + (edit ? ' btn-primary' : '') + '" data-act="adjEdit">' + (edit ? '조정 끝내기' : '금액 조정') + '</button>' +
+      (n ? '<span class="adj-count">조정 ' + n + '개</span><button type="button" class="btn btn-sm btn-ghost" data-act="adjReset">조정 초기화</button>' : '');
+  }
+  function bindAdjToolbar(box, h, redraw, changed) {
+    var e = $('[data-act="adjEdit"]', box); if (e) e.onclick = function () { h.adjEdit = !h.adjEdit; redraw(); };
+    var r = $('[data-act="adjReset"]', box); if (r) r.onclick = function () { if (!confirm('모든 금액 조정을 지울까요?')) return; var a = adjOf(h); a.rows = {}; a.cols = {}; a.cells = {}; changed(); redraw(); };
+  }
+
   function renderResult(animate) {
     renderSingleView(state.calc.result, $('#result'), {
-      tons: state.calc.tons, animate: animate, recordId: state.calc.recordId, emptyHint: '왼쪽에서 톤수를 골라 주세요.'
+      tons: state.calc.tons, animate: animate, recordId: state.calc.recordId, emptyHint: '왼쪽에서 톤수를 골라 주세요.', hold: state.calc
     });
   }
 
@@ -558,6 +641,10 @@
    */
   function renderSingleView(r, box, opts) {
     var rows = r.rows.filter(function (row) { return opts.tons.indexOf(row.ton) !== -1; });
+    var hold = opts.hold || (opts.hold = {}), adj = adjOf(hold), edit = !!hold.adjEdit;
+    var showRow = edit || !!adj.rows[1];
+    var redraw = function () { renderSingleView(r, box, Object.assign({}, opts, { animate: false })); };
+    var onAdj = opts.onAdj || function () { };
     var regionHtml = r.regionHits.length
       ? r.regionHits.map(function (h) { return '<span class="badge region">' + esc(h.point.replace('지', '')) + '·' + esc(h.name) + ' +' + won(h.amount) + '</span>'; }).join('')
       : '<span class="muted">없음</span>';
@@ -583,16 +670,18 @@
       html +=
         '<div class="card" style="--i:1;margin-top:16px">' +
         '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><div><div class="eyebrow">Quote · 톤수별 견적</div><h3>' + rows.length + '개 톤수</h3></div>' +
-        '<div class="actions">' + (opts.recordId ? '<button class="btn btn-sm btn-primary" data-act="saveQuote">견적으로 저장</button>' : '') +
+        '<div class="actions">' + adjToolbar(hold, edit) + (opts.recordId ? '<button class="btn btn-sm btn-primary" data-act="saveQuote">견적으로 저장</button>' : '') +
         '<button class="btn btn-sm" data-act="qdoc">견적서</button><button class="btn btn-sm" data-act="copy">회신 문구 복사</button><button class="btn btn-sm" data-act="xlsx">엑셀 저장</button></div></div>' +
-        (rows.length ? '<div class="table-wrap"><table class="data qrow"><thead><tr>' +
-          '<th>거리</th><th>지역할증</th><th>하행</th>' + rows.map(function (row) { return '<th>' + esc(row.ton) + '</th>'; }).join('') +
-          '</tr></thead><tbody><tr>' +
+        (rows.length ? '<div class="table-wrap"><table class="data qrow' + (edit ? ' adj-editing' : '') + '"><thead><tr>' +
+          '<th>거리</th><th>지역할증</th><th>하행</th>' + rows.map(function (row) { return '<th>' + esc(row.ton) + adjColTag(adj, row.ton) + '</th>'; }).join('') + (showRow ? '<th>행 조정</th>' : '') +
+          '</tr>' + (edit ? '<tr class="adj-head"><th colspan="3" class="adj-lbl">열 조정 →</th>' + adjColInputs(adj, rows.map(function (x) { return x.ton; })) + '<th></th></tr>' : '') + '</thead><tbody><tr>' +
           '<td class="num">' + r.distanceKm + '<span class="muted small">km</span></td>' +
           '<td class="num" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
           '<td class="num">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
-          rows.map(function (row) { return '<td class="total"><span class="num" data-total="' + row.total + '">' + won(row.total) + '</span></td>'; }).join('') +
-          '</tr></tbody></table></div>'
+          rows.map(function (row) {
+            return adjN(adj) || edit ? adjTd(adj, edit, 1, row.ton, row.total, 'total num') : '<td class="total"><span class="num" data-total="' + row.total + '">' + won(row.total) + '</span></td>';
+          }).join('') + (showRow ? adjRowTd(adj, edit, 1) : '') +
+          '</tr></tbody></table></div>' + (edit ? '<p class="hint adj-hint">금액 칸을 고치면 그 칸만 직접 입력값으로 고정돼요 · 열 조정은 그 톤수에, 행 조정은 모든 톤수에 더해져요 (빼려면 -5000)</p>' : '')
           : '<p class="muted" style="margin:0">선택된 톤수가 없습니다. ' + esc(opts.emptyHint || '') + '</p>') +
         '<p class="hint" style="margin:14px 0 0">톤수별 금액 = 기본타리프 + 기본타리프 × 하행 + 지역할증 (금액 단위 반올림) · 유류비·통행료는 아래 밀크런에 따로 표시 · 엑셀에는 계산식이 들어갑니다</p>' +
         '</div>';
@@ -604,16 +693,18 @@
     else $$('[data-total]', box).forEach(function (el) { countUp(el, Number(el.dataset.total)); });
 
     var copyBtn = $('[data-act="copy"]', box), xBtn = $('[data-act="xlsx"]', box), sBtn = $('[data-act="saveQuote"]', box);
-    if (sBtn) sBtn.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }); };
+    if (sBtn) sBtn.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }, adj); };
+    bindAdjToolbar(box, hold, redraw, onAdj);
+    bindAdj(box, adj, function (no, ton) { var x = r.rows.filter(function (y) { return y.ton === ton; })[0]; return x ? x.total : 0; }, function () { onAdj(); redraw(); });
     var qdBtn = $('[data-act="qdoc"]', box);
     if (qdBtn) qdBtn.onclick = function () {
-      openQuoteDoc({ type: '단건', items: [{ result: r }], tons: opts.tons, client: opts.client || '', meta: { baseTon: r.milkrun.ton, roundTrip: r.milkrun.roundTrip, diesel: { price: r.milkrun.dieselPrice } } });
+      openQuoteDoc({ type: '단건', items: [{ no: 1, result: r }], adj: adj, tons: opts.tons, client: opts.client || '', meta: { baseTon: r.milkrun.ton, roundTrip: r.milkrun.roundTrip, diesel: { price: r.milkrun.dieselPrice } } });
     };
     if (copyBtn) copyBtn.onclick = function () {
-      copyText(quoteText(r, rows)).then(function () { toast('회신 문구를 복사했습니다.'); });
+      copyText(quoteText(r, rows.map(function (x) { return { ton: x.ton, total: adjPrice(adj, 1, x.ton, x.total) }; }))).then(function () { toast('회신 문구를 복사했습니다.'); });
     };
     if (xBtn) xBtn.onclick = function () {
-      exportResultsXlsx(xBtn, [{ no: 1, status: 'ok', result: r }], {
+      exportResultsXlsx(xBtn, [{ no: 1, status: 'ok', result: r }], { adj: adj,
         tons: rows.map(function (x) { return x.ton; }), title: '운임 견적 · ' + r.origin.address + ' → ' + r.dest.address,
         fileName: 'JOIL_견적_' + (opts.fileDate || today()) + '.xlsx', meta: { baseTon: r.milkrun.ton, diesel: { price: r.milkrun.dieselPrice, source: r.dieselSource || '' } }, roundTrip: r.milkrun.roundTrip
       });
@@ -735,6 +826,7 @@
     b.opts = quoteOptions();
     b.meta = null;
     b.recordId = 'B' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    b.adj = newAdj(); b.adjEdit = false;
     runBulk(b.results.slice(), true);
   }
 
@@ -857,16 +949,19 @@
     var pageRows = list.slice(b.page * BULK_PAGE, (b.page + 1) * BULK_PAGE);
     var meta = b.meta || {};
     var mrTon = meta.baseTon || '';
+    var adj = adjOf(b), edit = !!b.adjEdit && !b.running, onAdj = opts.onAdj || function () { };
+    var showRow = edit || Object.keys(adj.rows).length > 0;
 
     var head1 = '<tr><th class="sticky c0" rowspan="2">#</th><th class="sticky c1" rowspan="2">하차지</th><th rowspan="2" class="left">상차지</th>' +
       '<th rowspan="2">거리</th><th rowspan="2">지역할증</th><th rowspan="2">하행</th>' +
       '<th colspan="3" class="grp mr">밀크런 · ' + esc(mrTon) + ' ' + (opts.roundTrip ? '왕복' : '편도') + '</th>' +
-      tons.map(function (t) { return '<th rowspan="2" class="grp">' + esc(t) + '</th>'; }).join('') + '</tr>';
-    var head2 = '<tr><th class="mr">유류비</th><th class="mr">통행료</th><th class="mr">합계</th></tr>';
-    var colCount = 9 + tons.length;
+      tons.map(function (t) { return '<th rowspan="2" class="grp">' + esc(t) + adjColTag(adj, t) + '</th>'; }).join('') + (showRow ? '<th rowspan="2" class="adj-rowc">행 조정</th>' : '') + '</tr>';
+    var head2 = '<tr><th class="mr">유류비</th><th class="mr">통행료</th><th class="mr">합계</th></tr>' +
+      (edit ? '<tr class="adj-head"><th colspan="9" class="adj-lbl">열 조정 → 그 톤수 모든 경로에 더하기 (빼려면 -5000)</th>' + adjColInputs(adj, tons) + '<th></th></tr>' : '');
+    var colCount = 9 + tons.length + (showRow ? 1 : 0);
 
     var body = pageRows.map(function (row) {
-      var start = '<td class="sticky c0 muted num">' + row.no + '</td>';
+      var start = '<td class="sticky c0 muted num">' + row.no + (row.added ? '<div class="added-tag" title="' + esc(row.added.at + ' · ' + row.added.by) + '">추가</div>' : '') + '</td>';
       if (row.status !== 'ok') {
         return '<tr class="err">' + start + '<td class="sticky c1"><div class="addr-in">' + esc(row.dest) + '</div></td>' +
           '<td class="left"><div class="addr-in">' + esc(row.origin) + '</div></td>' +
@@ -886,8 +981,8 @@
           var x = byTon[t];
           if (r.overMax) return '<td class="muted small">별도 문의</td>';
           if (!x || x.total == null) return '<td>–</td>';
-          return '<td class="num strong total-cell">' + won(x.total) + '</td>';
-        }).join('') + '</tr>';
+          return adjTd(adj, edit, row.no, t, x.total, 'num strong total-cell');
+        }).join('') + (showRow ? adjRowTd(adj, edit, row.no) : '') + '</tr>';
     }).join('');
 
     box.innerHTML =
@@ -903,9 +998,10 @@
       '<input class="input input-sm" data-el="search" placeholder="주소 검색" value="' + esc(b.search || '') + '" style="max-width:240px">' +
       '<select class="input input-sm" data-el="sort" style="width:auto"><option value="no">입력 순서</option><option value="kmAsc">거리 가까운 순</option><option value="kmDesc">거리 먼 순</option><option value="mrDesc">밀크런 금액 큰 순</option></select>' +
       '<div class="segmented" data-el="filter"><button type="button" data-f="all" class="' + (b.filter !== 'fail' ? 'on' : '') + '">전체</button><button type="button" data-f="fail" class="' + (b.filter === 'fail' ? 'on' : '') + '">실패만</button></div>' +
-      '</div>' +
+      (!b.running && okRows.length ? '<div class="actions adj-bar">' + adjToolbar(b, edit) + '</div>' : '') +
+      '</div>' + (edit ? '<p class="hint adj-hint">금액 칸을 고치면 그 칸만 직접 입력값으로 고정돼요 · 행 조정은 그 경로 모든 톤수, 열 조정은 그 톤수 모든 경로에 더해져요 · 입력 후 Enter</p>' : '') +
       (tons.length ? '' : '<p class="hint" style="margin:0 0 10px">' + esc(opts.emptyHint || '') + '</p>') +
-      '<div class="bulk-table"><table class="data bulk"><thead>' + head1 + head2 + '</thead><tbody>' + (body || '<tr><td colspan="' + colCount + '" class="left muted" style="padding:24px">조건에 맞는 결과가 없습니다.</td></tr>') + '</tbody></table></div>' +
+      '<div class="bulk-table"><table class="data bulk' + (edit ? ' adj-editing' : '') + '"><thead>' + head1 + head2 + '</thead><tbody>' + (body || '<tr><td colspan="' + colCount + '" class="left muted" style="padding:24px">조건에 맞는 결과가 없습니다.</td></tr>') + '</tbody></table></div>' +
       (pages > 1 ? '<div class="pager" style="margin-top:12px">' + Array.apply(null, { length: pages }).map(function (_, p) {
         return '<button data-p="' + p + '" class="' + (p === b.page ? 'on' : '') + '">' + (p * BULK_PAGE + 1) + '–' + Math.min(list.length, (p + 1) * BULK_PAGE) + '</button>';
       }).join('') + '</div>' : '') +
@@ -923,19 +1019,22 @@
     $$('[data-el="filter"] button', box).forEach(function (x) { x.onclick = function () { b.filter = x.dataset.f; b.page = 0; again(); }; });
     $$('.pager button', box).forEach(function (x) { x.onclick = function () { b.page = Number(x.dataset.p); again(); box.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
     var rt = $('[data-act="retry"]', box); if (rt) rt.onclick = retryFailed;
-    var sv = $('[data-act="saveQuote"]', box); if (sv) sv.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }); };
+    var sv = $('[data-act="saveQuote"]', box); if (sv) sv.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }, adj); };
+    bindAdjToolbar(box, b, again, onAdj);
+    var byNo = {}; all.forEach(function (x) { if (x.result) byNo[x.no] = x.result; });
+    bindAdj(box, adj, function (no, ton) { var rr = byNo[no], x = rr && rr.rows.filter(function (y) { return y.ton === ton; })[0]; return x ? x.total : 0; }, function () { onAdj(); again(); });
     $('[data-act="xlsx"]', box).onclick = function () { exportBulk(this, b, opts); };
     var qd = $('[data-act="qdoc"]', box);
     if (qd) qd.onclick = function () {
       var first = okRows[0] && okRows[0].result.milkrun;
-      openQuoteDoc({ type: '대량', items: bulkView(Object.assign({}, b, { filter: 'all', search: '' })), tons: tons, client: opts.client || '',
+      openQuoteDoc({ type: '대량', items: bulkView(Object.assign({}, b, { filter: 'all', search: '' })), adj: adj, tons: tons, client: opts.client || '',
         meta: { baseTon: meta.baseTon || (first && first.ton), roundTrip: first ? first.roundTrip : opts.roundTrip, diesel: meta.diesel || (first && { price: first.dieselPrice }) } });
     };
   }
 
   function exportBulk(btn, b, opts) {
     exportResultsXlsx(btn, b.results, {
-      tons: opts.tons, title: '대량 운임 견적 · ' + won(b.results.length) + '건', meta: b.meta || {}, roundTrip: opts.roundTrip, when: opts.when, who: opts.who,
+      tons: opts.tons, adj: b.adj, title: '대량 운임 견적 · ' + won(b.results.length) + '건', meta: b.meta || {}, roundTrip: opts.roundTrip, when: opts.when, who: opts.who,
       fileName: 'JOIL_대량견적_' + (opts.fileDate || today()) + '_' + b.results.length + '건.xlsx'
     });
   }
@@ -968,10 +1067,11 @@
     };
   }
 
-  function openSaveQuote(recordId, defaults) {
+  function openSaveQuote(recordId, defaults, adj) {
+    var hasAdj = adjN(adj) > 0;
     modal({
       eyebrow: '견적모음', title: '견적으로 저장',
-      body: '<p class="muted small" style="margin:0 0 14px">지금 보이는 결과(그때 금액 그대로)를 견적모음에 보관합니다. 기간 제한 없이 남아요.</p>' + quoteFieldsHtml(defaults || {}),
+      body: '<p class="muted small" style="margin:0 0 14px">지금 보이는 결과(그때 금액 그대로)를 견적모음에 보관합니다. 기간 제한 없이 남아요.' + (hasAdj ? ' <b>금액 조정 ' + adjN(adj) + '개도 같이 저장돼요.</b>' : '') + '</p>' + quoteFieldsHtml(defaults || {}),
       foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="qSave">저장</button>',
       onMount: function (m, close) {
         var read = bindQuoteFields(m);
@@ -979,7 +1079,7 @@
           var f = read();
           if (!f.name) return toast('견적명을 입력하세요.', 'err');
           var btn = this; busy(btn, true, '저장 중…');
-          api('quotes.save', Object.assign({ recordId: recordId }, f)).then(function () {
+          api('quotes.save', Object.assign({ recordId: recordId }, f, hasAdj ? { adj: adj, adjNote: adjNote(null, adj) } : {})).then(function () {
             close();
             state.quotes.list = null;
             toast('견적모음에 저장했습니다.');
@@ -997,27 +1097,31 @@
       '<span><b>조회자</b> ' + esc(meta.user ? meta.user.name + ' (' + meta.user.id + ')' : '') + '</span>' +
       '<span><b>밀크런</b> ' + esc(meta.baseTon || '') + ' · ' + (meta.roundTrip ? '왕복' : '편도') + '</span>' +
       '<span><b>경유가</b> ' + (meta.diesel ? won(meta.diesel.price) + '원/L (' + esc(meta.diesel.source) + ')' : '–') + '</span>' +
+      '<span><b>단가 기준</b> ' + (meta.ver ? '타리프 버전 ' + esc(meta.ver.slice(0, 7)) + (meta.verAt ? ' (' + esc(String(meta.verAt).slice(0, 10)) + '부터)' : '') : '<span class="muted">' + esc(meta.verNote || '버전 기록 이전') + '</span>') + '</span>' +
       '</div>';
   }
 
   /** 스냅샷 본문을 box에 그립니다. 금액은 저장 당시 그대로. */
-  function renderSnapshot(meta, items, box, holder, recordId, client) {
+  function renderSnapshot(meta, items, box, holder, recordId, client, extra) {
     var tons = meta.tons || state.pub.tons;
+    var onAdj = extra && extra.onAdj;
+    adjOf(holder);
     var fileDate = String(meta.at || '').slice(0, 10) || today();
     if (meta.type === '단건') {
       var it = items[0];
       if (!it || !it.result) { box.innerHTML = '<div class="card muted">결과가 없습니다.</div>'; return; }
-      renderSingleView(it.result, box, { tons: tons, animate: false, recordId: recordId, fileDate: fileDate, client: client });
+      renderSingleView(it.result, box, { tons: tons, animate: false, recordId: recordId, fileDate: fileDate, client: client, hold: holder, onAdj: onAdj });
       return;
     }
     if (!holder.bulk) {
       holder.bulk = {
-        results: items.map(function (x) { return { no: x.no, origin: x.origin, dest: x.dest, status: x.result ? 'ok' : 'error', result: x.result, error: x.error }; }),
+        results: items.map(function (x) { return { no: x.no, origin: x.origin, dest: x.dest, status: x.result ? 'ok' : 'error', result: x.result, error: x.error, added: x.added }; }),
         meta: { baseTon: meta.baseTon, diesel: meta.diesel }, page: 0, sort: 'no', search: '', filter: 'all', detail: true, running: false
       };
     }
+    holder.bulk.adj = holder.adj; // 같은 조정 객체를 같이 씀
     renderBulkView(holder.bulk, box, {
-      live: false, animate: false, tons: tons, roundTrip: meta.roundTrip, recordId: recordId, fileDate: fileDate, client: client,
+      live: false, animate: false, tons: tons, roundTrip: meta.roundTrip, recordId: recordId, fileDate: fileDate, client: client, onAdj: onAdj,
       when: meta.at, who: meta.user ? meta.user.name + ' (' + meta.user.id + ')' : ''
     });
   }
@@ -1198,20 +1302,100 @@
     $$('.qcard', list).forEach(function (c) { c.onclick = function () { qs.detail = c.dataset.id; qs.detailData = null; renderQuotes(); window.scrollTo(0, 0); }; });
   }
 
+  /** 저장된 견적에 구간 추가 (견적 낼 때 기준 그대로 계산) */
+  function openAddRoutes(id, d, done) {
+    var first = (d.items[0] || {}).origin || '';
+    modal({
+      eyebrow: '견적모음', title: '구간 추가 · ' + d.quote.name,
+      body: '<p class="muted small" style="margin:0 0 12px">' + (d.meta.ver
+        ? '이 견적을 낼 때의 <b>타리프·할증 기준</b>(버전 ' + esc(d.meta.ver.slice(0, 7)) + ')과 같은 밀크런 기준·경유가로 계산해서 마지막 행에 붙여요. 지금 타리프가 바뀌었어도 그때 기준으로 계산돼요.'
+        : '이 견적은 버전 기록 기능이 생기기 전에 저장돼서, 추가 구간은 <b>지금 타리프 기준</b>으로 계산돼요.') +
+        ' 열 조정(예: 5톤 +10,000)은 새 구간에도 자동으로 적용돼요.</p>' +
+        '<div class="field"><label>상차지 <span class="muted">(아래 줄에 하차지만 쓰면 이 상차지를 써요)</span></label><input class="input" id="arO" list="addrList" value="' + esc(first) + '"></div>' +
+        '<div class="field"><label>추가할 구간 <span class="muted">(한 줄에 하나 · 하차지만, 또는 엑셀 2열 "상차지 ⇥ 하차지")</span></label><textarea class="input" id="arL" rows="6" placeholder="인천 서구 …&#10;경기 평택시 …&#9;대구 달서구 …"></textarea></div>' +
+        '<p class="hint" id="arCnt" style="margin:0"></p>',
+      foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="arGo">계산해서 추가</button>',
+      onMount: function (m, close) {
+        ensureAddrList();
+        var parse = function () {
+          var o = $('#arO', m).value.trim();
+          return $('#arL', m).value.split('\n').map(function (l) { return l.trim(); }).filter(Boolean).map(function (l) {
+            var p = l.split(/\t|\s*\|\s*/);
+            return p.length >= 2 && p[1].trim() ? { origin: p[0].trim(), dest: p[1].trim() } : { origin: o, dest: p[0].trim() };
+          });
+        };
+        $('#arL', m).oninput = function () { var n = parse().length; $('#arCnt', m).textContent = n ? n + '건' : ''; };
+        $('#arGo', m).onclick = function () {
+          var pairs = parse();
+          if (!pairs.length) return toast('추가할 구간을 입력하세요.', 'err');
+          if (pairs.some(function (p) { return !p.origin; })) return toast('상차지를 입력하세요.', 'err');
+          if (pairs.length > 200) return toast('한 번에 200건까지 추가할 수 있어요.', 'err');
+          var btn = this, failed = [], added = 0, i = 0, last = null;
+          busy(btn, true, '계산 중… 0/' + pairs.length);
+          var step = function () {
+            if (i >= pairs.length) return Promise.resolve();
+            var chunk = pairs.slice(i, i + 20); i += chunk.length;
+            return api('quotes.addRoutes', { id: id, pairs: chunk }).then(function (r) {
+              last = r; added += r.added.length; failed = failed.concat(r.failed);
+              btn.innerHTML = '<span class="spinner"></span>계산 중… ' + i + '/' + pairs.length;
+              return step();
+            });
+          };
+          step().then(function () {
+            if (last) { d.items = last.items; d.meta = last.meta; d.quote = last.quote; d.adjLog = last.adjLog; state.quotes.list = null; }
+            close(); done();
+            toast(added + '건을 추가했어요.' + (failed.length ? ' 실패 ' + failed.length + '건' : ''), failed.length ? 'err' : 'ok');
+            if (failed.length) modal({ eyebrow: '구간 추가', title: '추가하지 못한 구간 ' + failed.length + '건', body: '<ul class="small">' + failed.map(function (f) { return '<li>' + esc(f.origin) + ' → ' + esc(f.dest) + '<br><span class="err-text">' + esc(f.error) + '</span></li>'; }).join('') + '</ul><p class="hint">주소를 고쳐서 다시 추가해 주세요.</p>' });
+          }).catch(function (err) {
+            busy(btn, false); toast(err.message, 'err');
+            if (last) { d.items = last.items; d.meta = last.meta; d.quote = last.quote; d.adjLog = last.adjLog; done(); }
+          });
+        };
+      }
+    });
+  }
+
   function renderQuoteDetail() {
     var qs = state.quotes, id = qs.detail;
     $('#main').innerHTML =
       '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><button class="btn btn-sm" id="qBack">← 견적모음</button><div class="actions" id="qActs"></div></div>' +
       '<div id="qHead"><div class="card muted"><span class="spinner dark"></span> 견적을 불러오는 중…</div></div><div id="qLink" style="margin-top:16px"></div><div id="qBody" style="margin-top:16px"></div>';
-    $('#qBack').onclick = function () { qs.detail = null; qs.detailData = null; renderQuotes(); };
+    $('#qBack').onclick = function () {
+      var d0 = qs.detailData;
+      if (d0 && adjDirty(d0) && !confirm('저장하지 않은 금액 조정이 있습니다. 나갈까요?')) return;
+      qs.detail = null; qs.detailData = null; renderQuotes();
+    };
+    var adjKey = function (a) { a = a || newAdj(); return JSON.stringify({ rows: a.rows || {}, cols: a.cols || {}, cells: a.cells || {} }); };
+    var adjDirty = function (d) { return adjKey(d.adj) !== d.adjSaved; };
+    var refreshAdj = function (d) {
+      var el = $('#qAdjSave'); if (!el) return;
+      el.innerHTML = adjDirty(d) ? '<span class="adj-dirty">저장 안 된 조정</span><button class="btn btn-sm" id="qAdjUndo">되돌리기</button><button class="btn btn-sm btn-accent" id="qAdjBtn">조정 저장</button>' : '';
+      if (!adjDirty(d)) return;
+      $('#qAdjUndo').onclick = function () {
+        var saved = JSON.parse(d.adjSaved), a = adjOf(d); a.rows = saved.rows; a.cols = saved.cols; a.cells = saved.cells;
+        renderSnapshot(d.meta, d.items, $('#qBody'), d, null, d.quote.client, { onAdj: function () { refreshAdj(d); } }); refreshAdj(d);
+      };
+      $('#qAdjBtn').onclick = function () {
+        var btn = this, note = adjNote(JSON.parse(d.adjSaved), d.adj); busy(btn, true, '저장 중…');
+        api('quotes.update', { id: id, patch: { adj: adjN(d.adj) ? d.adj : null, adjNote: note } }).then(function (r) {
+          d.quote = r.quote; d.adjSaved = adjKey(d.adj); qs.list = null;
+          (d.adjLog = d.adjLog || []).push({ at: today() + ' ' + new Date().toTimeString().slice(0, 5), by: state.user.name, note: note });
+          toast('금액 조정을 저장했습니다.'); show(d);
+        }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+      };
+    };
     var show = function (d) {
       if (state.view !== 'quotes' || qs.detail !== id) return;
       var q = d.quote;
+      if (d.adjSaved == null) { adjOf(d); d.adjSaved = adjKey(d.adj); }
+      var logs = (d.adjLog || []).slice().reverse();
       $('#qHead').innerHTML = '<div class="card qdetail">' +
         '<div class="row-between" style="flex-wrap:wrap;margin-bottom:12px"><div><div class="eyebrow">Quote · 저장된 견적</div><h2>' + esc(q.name) + '</h2></div>' + statusPill(q.status) + '</div>' +
         '<div class="qedit"><div>' + quoteFieldsHtml(q) + '</div>' +
         '<div class="qmeta"><div><b>저장</b> ' + esc(q.savedAt) + ' · ' + esc(q.userName) + '</div>' + (q.updatedAt && q.updatedAt !== q.savedAt ? '<div><b>수정</b> ' + esc(q.updatedAt) + '</div>' : '') +
-        snapshotInfoHtml(d.meta) + '</div></div>' +
+        snapshotInfoHtml(d.meta) +
+        (logs.length ? '<details class="adj-log"><summary>변경 기록 ' + logs.length + '건</summary><ul>' + logs.map(function (l) { return '<li><span class="muted small">' + esc(String(l.at).slice(0, 16)) + ' · ' + esc(String(l.by).replace(/ \(.*\)$/, '')) + '</span><br>' + esc(l.note) + '</li>'; }).join('') + '</ul></details>' : '') +
+        '</div></div>' +
         '<div class="actions" style="justify-content:flex-end;margin-top:6px"><button class="btn btn-sm btn-danger" id="qDel">삭제</button><button class="btn btn-sm btn-primary" id="qUpd">변경 저장</button></div></div>';
       var read = bindQuoteFields($('#qHead'));
       $('#qUpd').onclick = function () {
@@ -1228,9 +1412,11 @@
           qs.detail = null; qs.detailData = null; qs.list = null; toast('삭제했습니다.'); renderQuotes();
         }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
       };
-      $('#qActs').innerHTML = '<button class="btn btn-sm" id="qRecalc">현재 단가로 다시 계산</button>';
+      $('#qActs').innerHTML = '<span id="qAdjSave" class="actions"></span><button class="btn btn-sm" id="qAdd">＋ 구간 추가</button><button class="btn btn-sm" id="qRecalc">현재 단가로 다시 계산</button>';
       $('#qRecalc').onclick = function () { recalcNow(d.meta, d.items); };
-      if (!d.drawn) { renderSnapshot(d.meta, d.items, $('#qBody'), d, null, q.client); d.drawn = true; drawQuoteLink(d, $('#qLink')); }
+      $('#qAdd').onclick = function () { openAddRoutes(id, d, function () { d.bulk = null; d.drawn = false; show(d); }); };
+      if (!d.drawn) { renderSnapshot(d.meta, d.items, $('#qBody'), d, null, q.client, { onAdj: function () { refreshAdj(d); } }); d.drawn = true; drawQuoteLink(d, $('#qLink')); }
+      refreshAdj(d);
     };
     if (qs.detailData) { qs.detailData.drawn = false; return show(qs.detailData); }
     api('quotes.get', { id: id }).then(function (d) { qs.detailData = d; show(d); }).catch(function (err) {
@@ -2806,7 +2992,7 @@
     if (a.loaded && !force) return Promise.resolve();
     return api('admin.bootstrap').then(function (r) {
       if (!a.settingsDirty) a.settings = r.settings;
-      a.keys = r.keys; a.users = r.users; a.logs = r.logs; a.cache = r.cache;
+      a.keys = r.keys; a.users = r.users; a.logs = r.logs; a.cache = r.cache; a.tariffWarn = r.tariffWarn;
       a.loaded = true;
       loadTariff(); // 타리프는 크니까 뒤에서 미리 받아 둠
     });
@@ -3021,10 +3207,15 @@
     if (a.page >= pages) a.page = 0;
     var from = a.page * PAGE;
     var body = $('#adminBody');
+    var zeros = 0, firstZero = null;
+    t.rows.forEach(function (r, i) { r.forEach(function (v, j) { if (!(Number(v) > 0)) { zeros++; if (!firstZero) firstZero = (i + 1) + 'km ' + tons[j]; } }); });
+    var tw = a.tariffWarn || {};
     body.innerHTML =
+      (zeros ? '<div class="notice err-notice">⚠ 단가가 <b>0원이거나 비어 있는 칸이 ' + won(zeros) + '개</b> 있어요 (처음: ' + esc(firstZero) + '). 이 칸은 0원으로 계산되니 채워 주세요.</div>' : '') +
+      (tw.tonMismatch ? '<div class="notice err-notice">⚠ 타리프 시트의 톤수 이름(1행)이 기본 설정의 톤수와 달라요. 시트 1행을 고치거나 기본 설정을 맞춰 주세요.</div>' : '') +
       '<div class="card">' +
       '<div class="row-between" style="flex-wrap:wrap;margin-bottom:16px"><div><div class="eyebrow">Tariff · 타리프</div><h2>km × 톤수 단가표</h2>' +
-      '<p class="muted small" style="margin:6px 0 0">1~' + t.rows.length + 'km · ' + tons.length + '개 톤수 · 칸을 눌러 바로 수정하거나 엑셀에서 통째로 붙여넣으세요.</p></div>' +
+      '<p class="muted small" style="margin:6px 0 0">1~' + t.rows.length + 'km · ' + tons.length + '개 톤수 · 칸을 눌러 바로 수정하거나 엑셀에서 통째로 붙여넣으세요. 서버 구글 시트의 타리프 탭을 직접 고쳐도 바로 반영돼요.</p></div>' +
       '<div class="actions"><button class="btn btn-sm" id="pasteBtn">엑셀 붙여넣기</button><button class="btn btn-sm" id="csvBtn">CSV 내려받기</button>' +
       (a.tariffDirty ? '<button class="btn btn-sm btn-danger" id="revertBtn">변경 취소</button>' : '') + '</div></div>' +
       '<div class="row-between" style="margin-bottom:10px;flex-wrap:wrap"><div class="pager">' +
@@ -3442,27 +3633,30 @@
   function exportResultsXlsx(btn, items, opts) {
     busy(btn, true, '만드는 중…');
     return loadExcelJS().then(function (EJ) {
-      var tons = opts.tons, meta = opts.meta || {};
+      var tons = opts.tons, meta = opts.meta || {}, adj = opts.adj || newAdj();
       var wb = new EJ.Workbook();
       var HEAD = 4, TS = '기본타리프';
       var fixed = ['No', '상차지', '하차지', '거리(km)', '요금기준(km)', '지역할증', '하행', '밀크런 유류비', '통행료', '유류비+통행료'];
       var first = fixed.length; // 톤수 시작 열(0부터)
       var ws = wb.addWorksheet('견적', { views: [{ state: 'frozen', xSplit: 3, ySplit: HEAD }], pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
       var wt = wb.addWorksheet(TS, { views: [{ state: 'frozen', xSplit: 3, ySplit: HEAD }], pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
-      ws.columns = [6, 34, 34, 9, 10, 11, 8, 12, 11, 13].concat(tons.map(function () { return 12; })).concat([36]).map(function (w) { return { width: w }; });
+      ws.columns = [6, 34, 34, 9, 10, 11, 8, 12, 11, 13].concat(tons.map(function () { return 12; })).concat([11, 36]).map(function (w) { return { width: w }; });
       wt.columns = [6, 34, 34, 10].concat(tons.map(function () { return 12; })).map(function (w) { return { width: w }; });
-      var lastCol = first + tons.length; // 오류 열
+      var rowAdjCol = first + tons.length, lastCol = rowAdjCol + 1; // 행 조정 열, 오류 열
       ws.mergeCells(1, 1, 1, lastCol + 1);
       ws.getCell(1, 1).value = opts.title || '운임 견적 (내부 검산용)';
       ws.getCell(1, 1).font = { size: 15, bold: true };
       ws.mergeCells(2, 1, 2, lastCol + 1);
       var pr = (state.pub && state.pub.priceRounding) || { unit: 1000, mode: 'round' };
       ws.getCell(2, 1).value = '톤수 칸 = 기본타리프(' + TS + ' 시트) + 기본타리프 × 하행 + 지역할증 → ' + won(pr.unit) + '원 단위 ' + (pr.mode === 'ceil' ? '올림' : pr.mode === 'floor' ? '내림' : '반올림') +
-        ' · 지역할증·하행 칸을 고치면 합계가 다시 계산됩니다 · ' + (opts.when || today()) + ' ' + (opts.who || state.user.name);
+        ' + 행 조정 + 열 조정(3행) · 지역할증·하행·조정 칸을 고치면 합계가 다시 계산됩니다 · 노란 칸은 직접 입력한 금액 · ' + (opts.when || today()) + ' ' + (opts.who || state.user.name);
       ws.getCell(2, 1).font = { size: 9.5, color: { argb: XL.muted } };
       wt.getCell(1, 1).value = '기본 타리프 (할증 전 단가 · 견적 시트의 수식이 이 값을 씁니다)';
       wt.getCell(1, 1).font = { size: 13, bold: true };
-      var head = fixed.concat(tons).concat(['오류']);
+      var head = fixed.concat(tons).concat(['행 조정', '오류']);
+      // 3행: 열 조정 (톤수 칸 바로 위)
+      var lbl = ws.getCell(3, first); lbl.value = '열 조정 →'; lbl.alignment = { horizontal: 'right' }; lbl.font = { bold: true, color: { argb: XL.muted } };
+      tons.forEach(function (t, i) { var c = ws.getCell(3, first + i + 1); c.value = adj.cols[t] || 0; c.numFmt = '#,##0;-#,##0;"–"'; c.fill = XL.fill(XL.note); c.border = XL.thin(); c.alignment = { horizontal: 'right' }; });
       head.forEach(function (h, i) {
         var c = ws.getCell(HEAD, i + 1);
         c.value = h; c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = XL.fill(i >= 7 && i <= 9 ? 'FF2A7D8B' : XL.ink); c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = XL.thin();
@@ -3499,9 +3693,16 @@
           }
           put(wt, 4 + i, x.tariff, '#,##0');
           var T = "'" + TS + "'!" + XL.col(4 + i) + R, H = '$' + XL.col(6) + R, G = '$' + XL.col(5) + R;
-          var c = put(ws, col, { formula: xlRoundFormula(T + '+ROUND(' + T + '*' + H + ',0)+' + G), result: x.total }, '#,##0');
+          var k = row.no + '|' + t;
+          if (adj.cells.hasOwnProperty(k)) {
+            var fc = put(ws, col, adj.cells[k], '#,##0');
+            fc.font = { bold: true }; fc.fill = XL.fill('FFFFE08A'); fc.note = '직접 입력한 금액 (계산값 ' + won(adjCalc(adj, row.no, t, x.total)) + ')';
+            return;
+          }
+          var c = put(ws, col, { formula: xlRoundFormula(T + '+ROUND(' + T + '*' + H + ',0)+' + G) + '+$' + XL.col(rowAdjCol) + R + '+' + XL.col(col) + '$3', result: adjPrice(adj, row.no, t, x.total) }, '#,##0');
           c.font = { bold: true };
         });
+        var ra = put(ws, rowAdjCol, adj.rows[row.no] || 0, '#,##0;-#,##0;"–"'); ra.fill = XL.fill(XL.note);
         put(ws, lastCol, '');
       });
       var cs = wb.addWorksheet('조건');
@@ -3662,10 +3863,11 @@
     var ok = src.items.filter(function (x) { return x.result; });
     var no = 'Q' + o.date.replace(/-/g, '') + '-' + ('0' + new Date().getHours()).slice(-2) + ('0' + new Date().getMinutes()).slice(-2);
     var coName = co.name || o.biz;
-    var priceOf = function (r, t) {
+    var priceOf = function (it, t) {
+      var r = it.result;
       if (r.overMax) return null;
       var x = r.rows.filter(function (y) { return y.ton === t; })[0];
-      return x ? x.total : null;
+      return x && x.total != null ? adjPrice(src.adj, it.no || 1, t, x.total) : null;
     };
     var cell = function (v) { return v == null ? '<td class="num muted">별도 문의</td>' : '<td class="num">' + won(v) + '</td>'; };
     var bodyHtml;
@@ -3674,13 +3876,13 @@
       var r = ok[0].result;
       bodyHtml = '<table class="data rpt qd-table"><thead><tr><th class="left">구간</th><th>운행거리</th>' + o.tons.map(function (t) { return '<th>' + esc(t) + '</th>'; }).join('') + (o.milkrun ? '<th>' + esc(mrLabel) + '</th>' : '') + '</tr></thead><tbody>' +
         '<tr><td class="left"><span class="pin from"></span>' + esc(r.origin.address) + '<br><span class="pin to"></span>' + esc(r.dest.address) + '</td><td class="num">약 ' + r.distanceKm + 'km</td>' +
-        o.tons.map(function (t) { return cell(priceOf(r, t)); }).join('') + (o.milkrun ? cell(r.milkrun.total) : '') + '</tr></tbody></table>';
+        o.tons.map(function (t) { return cell(priceOf(ok[0], t)); }).join('') + (o.milkrun ? cell(r.milkrun.total) : '') + '</tr></tbody></table>';
     } else {
       bodyHtml = '<table class="data rpt qd-table"><thead><tr><th>No</th><th class="left">상차지</th><th class="left">하차지</th><th>거리</th>' + o.tons.map(function (t) { return '<th>' + esc(t) + '</th>'; }).join('') + (o.milkrun ? '<th>' + esc(mrLabel) + '</th>' : '') + '</tr></thead><tbody>' +
         ok.map(function (x, i) {
           var rr = x.result;
           return '<tr><td class="num muted">' + (i + 1) + '</td><td class="left">' + esc(rr.origin.address) + '</td><td class="left">' + esc(rr.dest.address) + '</td><td class="num">' + rr.distanceKm + 'km</td>' +
-            o.tons.map(function (t) { return cell(priceOf(rr, t)); }).join('') + (o.milkrun ? cell(rr.milkrun.total) : '') + '</tr>';
+            o.tons.map(function (t) { return cell(priceOf(x, t)); }).join('') + (o.milkrun ? cell(rr.milkrun.total) : '') + '</tr>';
         }).join('') + '</tbody></table>';
     }
     var noteLines = [];
@@ -3707,7 +3909,7 @@
         return '<tr>' + (i === 0 ? '<th rowspan="' + supplier.length + '" class="qd-vert">공<br>급<br>자</th>' : '') + '<th>' + s[0] + '</th><td>' + esc(s[1] || '') +
           (s[0] === '대표자' && co.stamp ? '<span class="qd-seal-wrap"><span class="qd-seal-txt">(인)</span><img class="qd-seal" src="' + esc(co.stamp) + '" alt=""></span>' : (s[0] === '대표자' ? ' <span class="muted">(인)</span>' : '')) + '</td></tr>';
       }).join('') + '</tbody></table></div>' +
-      '<div class="qd-sum"><span>견적 금액</span><b>' + (src.type === '단건' && o.tons.length === 1 && priceOf(ok[0].result, o.tons[0]) != null ? '일금 ' + won(priceOf(ok[0].result, o.tons[0])) + '원정 (' + esc(o.tons[0]) + ')' : '아래 표 참조') + '</b>' + (o.vat ? '<small>부가세 별도</small>' : '') + '</div>' +
+      '<div class="qd-sum"><span>견적 금액</span><b>' + (src.type === '단건' && o.tons.length === 1 && priceOf(ok[0], o.tons[0]) != null ? '일금 ' + won(priceOf(ok[0], o.tons[0])) + '원정 (' + esc(o.tons[0]) + ')' : '아래 표 참조') + '</b>' + (o.vat ? '<small>부가세 별도</small>' : '') + '</div>' +
       bodyHtml +
       (noteLines.length ? '<div class="qd-note"><h3>비고</h3><ul>' + noteLines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul></div>' : '') +
       (co.bank ? '<div class="qd-bank"><span>입금 계좌</span> ' + esc(co.bank) + '</div>' : '') +
@@ -3722,13 +3924,13 @@
     $('#qdClose').onclick = close;
     $('#qdPrint').onclick = function () { window.print(); };
     $('#qdX').onclick = function () {
-      var one = src.type === '단건' && o.tons.length === 1 && priceOf(ok[0].result, o.tons[0]) != null;
+      var one = src.type === '단건' && o.tons.length === 1 && priceOf(ok[0], o.tons[0]) != null;
       quoteDocXlsx(this, {
         no: no, date: o.date, valid: o.valid, to: o.to, ref: o.ref, vat: o.vat, tons: o.tons, milkrun: o.milkrun, mrLabel: mrLabel,
         supplier: supplier.map(function (x) { return [x[0], x[1] || '']; }), stamp: co.stamp || '', bank: co.bank || '', notes: noteLines,
-        sumText: one ? '일금 ' + won(priceOf(ok[0].result, o.tons[0])) + '원정 (' + o.tons[0] + ')' : '아래 표 참조',
+        sumText: one ? '일금 ' + won(priceOf(ok[0], o.tons[0])) + '원정 (' + o.tons[0] + ')' : '아래 표 참조',
         footer: [coName, co.addr, co.tel].filter(Boolean).join(' · '),
-        rows: ok.map(function (x) { var rr = x.result; return { from: rr.origin.address, to: rr.dest.address, km: rr.distanceKm, prices: o.tons.map(function (t) { return priceOf(rr, t); }), mr: rr.milkrun.total }; }),
+        rows: ok.map(function (x) { var rr = x.result; return { from: rr.origin.address, to: rr.dest.address, km: rr.distanceKm, prices: o.tons.map(function (t) { return priceOf(x, t); }), mr: rr.milkrun.total }; }),
         fileName: '견적서_' + (o.to || coName).replace(/[\\/:*?"<>|]/g, '_') + '_' + o.date + '.xlsx'
       });
     };
@@ -4468,7 +4670,11 @@
       ['history', '조회기록 · 견적모음', [
         '모든 조회는 그때 금액 그대로 자동 보관됩니다(기본 90일). <b>상세보기</b>로 그때 결과를 다시 볼 수 있어요.',
         '오래 둘 결과는 <b>견적으로 저장</b>하세요. 견적모음은 기간 제한 없이 남고, 거래처·메모·진행 상태(작성/제출/수주/미수주)를 적어 둘 수 있습니다.',
-        '<b>현재 단가로 다시 계산</b>을 누르면 같은 경로를 지금 단가로 다시 계산합니다.'
+        '<b>현재 단가로 다시 계산</b>을 누르면 같은 경로를 지금 단가로 다시 계산합니다.',
+        '<b>금액 조정</b>: 결과 표의 "금액 조정"을 누르면 열(톤수 전체), 행(그 경로 전체), 칸 하나를 직접 고칠 수 있어요. 빼려면 -5000처럼 입력합니다. 조정한 칸은 노란색, 직접 입력한 칸은 주황 테두리로 표시돼요.',
+        '조정은 <b>견적으로 저장</b>할 때 같이 저장되고, 견적모음 상세에서 계속 고친 뒤 <b>조정 저장</b>을 누르면 돼요. 누가 언제 무엇을 바꿨는지는 "변경 기록"에 남아요.',
+        '<b>구간 추가</b>: 견적모음 상세에서 새 구간을 넣으면 <b>그 견적을 낼 때의 타리프·할증 기준</b>으로 계산해 마지막 행에 붙여요. 열 조정도 자동으로 적용됩니다.',
+        '결과 엑셀에는 계산식이 들어가요. 지역할증·하행·행 조정·열 조정(3행) 칸을 바꾸면 합계가 다시 계산됩니다.'
       ].concat(ha ? ['견적모음 상세의 <b>실적 연결</b>에서 매출처·경로를 이어 두면, 수주 후 실제 월별 매출·매입·이익을 견적 단가와 비교해서 보여 줍니다.'] : [])],
       ['docs', '서류함', [
         '사업자등록증, 통장사본, 허가증, 보험증권, 견적서 양식 같은 회사 서류를 올려 두고 필요할 때 바로 미리보기·다운로드합니다.',

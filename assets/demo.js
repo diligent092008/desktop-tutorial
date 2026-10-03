@@ -87,9 +87,16 @@
     store.logs.unshift({ at: today(), id: me.id, name: me.name, from: from, to: to, km: km, note: note, recordId: recordId || '', type: type || '', count: count || '' });
     store.logs = store.logs.slice(0, 300); save();
   }
+  function verId(s, t) { var str = JSON.stringify([s.tons, s.maxKm, s.kmRounding, s.priceRounding, s.regionRules, s.downhill, t.rows]), h = 0; for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0; return 'V' + ('00000000' + (h >>> 0).toString(16)).slice(-8) + 'demo'; }
+  function curVer() {
+    var id = verId(store.settings, store.tariff);
+    store.versions = store.versions || {};
+    if (!store.versions[id]) { store.versions[id] = { at: today(), s: JSON.parse(JSON.stringify(store.settings)), t: JSON.parse(JSON.stringify(store.tariff)) }; save(); }
+    return id;
+  }
   function snapMeta(me, type, count, out) {
     var s = store.settings;
-    return { type: type, at: today(), user: { id: me.id, name: me.name }, count: count, baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip, tons: s.tons.map(function (t) { return t.name; }) };
+    return { ver: curVer(), type: type, at: today(), user: { id: me.id, name: me.name }, count: count, baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip, tons: s.tons.map(function (t) { return t.name; }) };
   }
   function addSnap(id, meta, items) {
     var sn = store.snaps[id] || (store.snaps[id] = { meta: meta, items: {} });
@@ -112,8 +119,8 @@
     return { name: name, client: String(f.client || '').trim(), memo: String(f.memo || ''), status: ['작성', '제출', '수주', '미수주'].indexOf(f.status) !== -1 ? f.status : '작성' };
   }
   function publicQuote(q) { var o = JSON.parse(JSON.stringify(q)); delete o.data; return o; }
-  function quoteMany(pairs, req) {
-    var s = store.settings;
+  function quoteMany(pairs, req, ver) {
+    var s = ver ? ver.s : store.settings, tariffOf = ver ? ver.t : store.tariff;
     var baseTon = joilFindTon(s, req.baseTon) || joilFindTon(s, s.milkrun.baseTon) || s.tons[0];
     var dp = req.dieselMode === 'manual' && Number(req.dieselPrice) > 0 ? { price: Number(req.dieselPrice), source: '직접 입력' } : diesel();
     var items = pairs.map(function (p) {
@@ -123,7 +130,7 @@
       if (o.lat === d.lat && o.lng === d.lng) return { error: '경로 없음: 출발지와 도착지가 같습니다' };
       var km = Math.max(3, haversine(o, d) * 1.22);
       var toll = km < 15 ? 0 : Math.round((900 + km * 45) * (1 + 0.12 * (Number(baseTon.tollClass) - 1)) / 100) * 100;
-      var r = joilComputeQuote({ origin: o, dest: d, distanceKm: km, toll: toll, dieselPrice: dp.price, baseTon: baseTon.name }, s, store.tariff);
+      var r = joilComputeQuote({ origin: o, dest: d, distanceKm: km, toll: toll, dieselPrice: dp.price, baseTon: baseTon.name }, s, tariffOf);
       r.origin = o; r.dest = d; r.dieselSource = dp.source;
       return { result: r };
     });
@@ -143,7 +150,7 @@
     var s = store.settings;
     if (me.mustChange && ['me', 'logout', 'changePassword', 'publicSettings'].indexOf(req.action) === -1) fail('임시 비밀번호입니다. 비밀번호를 먼저 변경하세요.');
     if (['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete',
-      'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent'].indexOf(req.action) !== -1) needPerm(me, 'quote');
+      'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent', 'quotes.addRoutes'].indexOf(req.action) !== -1) needPerm(me, 'quote');
     if (req.action === 'analysis.index' || req.action === 'analysis.load') needPerm(me, 'analysis');
     switch (req.action) {
       case 'analysis.index':
@@ -217,19 +224,34 @@
         var nq = { id: 'E' + Date.now().toString(36), savedAt: today(), userId: me.id, userName: me.name, name: f.name, client: f.client, memo: f.memo, status: f.status,
           type: ss.meta.type, count: ss.items.length, from: isB ? first.origin : (first.result ? first.result.origin.address : first.origin),
           to: isB ? '하차지 ' + ss.items.length + '곳' : (first.result ? first.result.dest.address : first.dest), recordId: sl.recordId, queriedAt: sl.at, updatedAt: today(), data: ss };
+        nq.adj = req.adj || null; nq.adjLog = [{ at: today(), by: me.name, note: '견적 저장' + (req.adj ? ' (조정 포함: ' + (req.adjNote || '') + ')' : '') }];
         store.quotes.push(nq); save();
         return { quote: publicQuote(nq) };
       case 'quotes.list':
         return { quotes: store.quotes.filter(function (q) { return me.role === 'admin' || q.userId === me.id; }).map(publicQuote).reverse() };
       case 'quotes.get':
         var gq = quoteOf(me, req.id);
-        return { quote: publicQuote(gq), meta: gq.data.meta, items: gq.data.items };
+        var gm = JSON.parse(JSON.stringify(gq.data.meta)); if (gm.ver && store.versions && store.versions[gm.ver]) gm.verAt = store.versions[gm.ver].at;
+        return { quote: publicQuote(gq), meta: gm, items: gq.data.items, adj: gq.adj || null, adjLog: gq.adjLog || [] };
+      case 'quotes.addRoutes':
+        var aq = quoteOf(me, req.id), am = aq.data.meta;
+        var vv = am.ver && store.versions && store.versions[am.ver];
+        var ao = quoteMany(req.pairs || [], { baseTon: am.baseTon, dieselMode: 'manual', dieselPrice: am.diesel && am.diesel.price }, vv || null);
+        var mx = aq.data.items.reduce(function (m, x) { return Math.max(m, x.no); }, 0), addedNos = [], failedA = [];
+        ao.items.forEach(function (it, i) {
+          if (it.error) failedA.push({ origin: req.pairs[i].origin, dest: req.pairs[i].dest, error: it.error });
+          else { aq.data.items.push({ no: ++mx, origin: req.pairs[i].origin, dest: req.pairs[i].dest, result: it.result, added: { at: today(), by: me.name } }); addedNos.push(mx); }
+        });
+        if (addedNos.length) { am.type = '대량'; am.count = aq.data.items.length; aq.type = '대량'; aq.count = am.count; aq.to = '하차지 ' + am.count + '곳'; (aq.adjLog = aq.adjLog || []).push({ at: today(), by: me.name, note: '구간 ' + addedNos.length + '건 추가' }); save(); }
+        var ar = handle({ action: 'quotes.get', token: req.token, id: req.id }); ar.added = addedNos; ar.failed = failedA; ar.usedVersion = vv ? am.ver : null;
+        return ar;
       case 'quotes.update':
         var uq = quoteOf(me, req.id), uf = quoteFields(Object.assign({}, uq, req.patch || {}));
         if (req.patch && req.patch.hasOwnProperty('link')) {
           if (req.patch.link && !req.patch.link.cust) fail('연결할 매출처를 고르세요.');
           uq.link = req.patch.link || null;
         }
+        if (req.patch && req.patch.hasOwnProperty('adj')) { uq.adj = req.patch.adj || null; (uq.adjLog = uq.adjLog || []).push({ at: today(), by: me.name, note: req.patch.adjNote || '금액 조정' }); }
         uq.name = uf.name; uq.client = uf.client; uq.memo = uf.memo; uq.status = uf.status; uq.updatedAt = today(); save();
         return { quote: publicQuote(uq) };
       case 'diesel.recent': return { now: diesel(), rows: dieselRows.slice(-60).map(function (r) { return [r[0], r[1]]; }) };

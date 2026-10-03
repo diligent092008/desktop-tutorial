@@ -122,7 +122,7 @@ function handle_(req) {
   }
 
   var QUOTE_ACTIONS = ['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete',
-    'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent'];
+    'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent', 'quotes.addRoutes'];
   if (QUOTE_ACTIONS.indexOf(action) !== -1) requirePerm_(session, 'quote');
   if (action === 'analysis.index' || action === 'analysis.load') requirePerm_(session, 'analysis');
   switch (action) {
@@ -138,6 +138,7 @@ function handle_(req) {
     case 'quotes.get': return quotesGet_(session, req.id);
     case 'quotes.update': return quotesUpdate_(session, req.id, req.patch);
     case 'quotes.delete': return quotesDelete_(session, req.id);
+    case 'quotes.addRoutes': return quotesAddRoutes_(session, req);
     case 'docs.list': return docsList_();
     case 'docs.upload': return docsUpload_(session, req);
     case 'docs.update': return docsUpdate_(session, req.id, req.patch);
@@ -151,7 +152,7 @@ function handle_(req) {
 
   if (session.role !== 'admin') throw new Error('관리자만 사용할 수 있습니다.');
   switch (action) {
-    case 'admin.bootstrap': cleanupSnapshots_(); return { settings: getSettings_(), keys: keyStatus_(), users: listUsers_(), logs: getLogs_(200), cache: cacheInfo_(), diesel: dieselStatus_() };
+    case 'admin.bootstrap': cleanupSnapshots_(); return { settings: getSettings_(), keys: keyStatus_(), users: listUsers_(), logs: getLogs_(200), cache: cacheInfo_(), diesel: dieselStatus_(), tariffWarn: tariffWarn_() };
     case 'admin.getSettings': return { settings: getSettings_(), keys: keyStatus_() };
     case 'admin.saveSettings': return saveSettings_(req.settings);
     case 'admin.getTariff': return { tariff: readTariff_() };
@@ -366,6 +367,7 @@ function saveSettings_(settings) {
   if (!settings || !Array.isArray(settings.tons) || !Array.isArray(settings.regionRules)) throw new Error('설정 형식이 올바르지 않습니다.');
   var merged = joilMergeSettings(settings);
   PropertiesService.getScriptProperties().setProperty('SETTINGS', JSON.stringify(merged));
+  dropCalcCache_();
   return { settings: merged };
 }
 
@@ -407,7 +409,7 @@ function writeTariff_(tariff) {
   sh.getRange(2, 1, body.length, header[0].length).setValues(body);
   sh.getRange(2, 2, body.length, tariff.tons.length).setNumberFormat('#,##0');
   sh.setFrozenRows(1);
-  CacheService.getScriptCache().remove('TARIFF');
+  dropCalcCache_();
 }
 
 function saveTariff_(tariff) {
@@ -583,7 +585,10 @@ function unpackJson_(s) {
 
 function snapshotMeta_(session, type, count, out) {
   var s = getSettings_();
+  var ver = '';
+  try { ver = currentVersion_(session); } catch (e) { /* 버전 기록 실패해도 조회는 계속 */ }
   return {
+    ver: ver,
     type: type, at: now_(), user: { id: session.id, name: session.name }, count: count,
     baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip,
     tons: s.tons.map(function (t) { return t.name; })
@@ -630,7 +635,7 @@ function readPacked_(sheetName, id) {
   var meta = null, byNo = {};
   rows.forEach(function (row) {
     var d = unpackJson_(sh.getRange(row, 4).getValue());
-    meta = meta || d.meta;
+    meta = d.meta; // 나중에 붙인 묶음(구간 추가)의 정보가 최신
     d.items.forEach(function (it) {
       var prev = byNo[it.no];
       if (!prev || it.result || !prev.result) byNo[it.no] = it;
@@ -663,9 +668,135 @@ function cleanupSnapshots_() {
   if (n) sh.deleteRows(2, n);
 }
 
+/* ───────────── 타리프 버전 ─────────────
+ * 계산에 영향을 주는 것(타리프 표 + 톤수·지역할증·하행·반올림 설정)을 묶어 내용이 바뀔 때마다 버전으로 보관합니다.
+ * 버전 ID = 내용의 지문(MD5) → 사이트에서 저장하든 시트를 직접 고치든 내용이 같으면 같은 버전.
+ * 견적에는 계산할 때의 버전 ID가 남아서, 나중에 구간을 추가해도 그때 기준으로 계산합니다.
+ */
+var SHEET_VER = '타리프버전';
+var VER_HEADER = ['버전ID', '처음 사용', '사용자', '데이터1', '데이터2', '데이터3'];
+var CALC_KEYS = ['tons', 'maxKm', 'kmRounding', 'priceRounding', 'regionRules', 'downhill'];
+
+function calcPart_(s) { var o = {}; CALC_KEYS.forEach(function (k) { o[k] = s[k]; }); return o; }
+
+/** 지금 기준의 버전 ID (없으면 새로 기록) */
+function currentVersion_(session) {
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get('VER_CUR');
+  if (hit) return hit;
+  var content = { s: calcPart_(getSettings_()), t: readTariff_().rows };
+  var id = 'V' + md5_(JSON.stringify(content)).slice(0, 12);
+  var sh = cacheSheet_(SHEET_VER, VER_HEADER);
+  var exists = sh.getLastRow() >= 2 && sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(id).matchEntireCell(true).findNext();
+  if (!exists) {
+    var packed = packJson_(content), parts = [];
+    for (var i = 0; i < packed.length; i += CELL_LIMIT) parts.push(packed.slice(i, i + CELL_LIMIT));
+    if (parts.length > 3) throw new Error('타리프 버전 데이터가 너무 큽니다.');
+    while (parts.length < 3) parts.push('');
+    sh.appendRow([id, now_(), session ? session.name + ' (' + session.id + ')' : ''].concat(parts));
+  }
+  cache.put('VER_CUR', id, 21600);
+  return id;
+}
+
+/** 버전 ID → { settings(지금 설정에 그때 계산 기준을 덮어씀), tariff, at } */
+function loadVersion_(id) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_VER);
+  if (!id || !sh || sh.getLastRow() < 2) return null;
+  var hit = sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(String(id)).matchEntireCell(true).findNext();
+  if (!hit) return null;
+  var row = sh.getRange(hit.getRow(), 1, 1, VER_HEADER.length).getValues()[0];
+  var c = unpackJson_(String(row[3]) + String(row[4]) + String(row[5]));
+  var s = getSettings_();
+  CALC_KEYS.forEach(function (k) { s[k] = c.s[k]; });
+  return { settings: s, tariff: { tons: c.s.tons.map(function (t) { return t.name; }), rows: c.t }, at: fmt_(row[1]) };
+}
+
+function dropCalcCache_() { CacheService.getScriptCache().removeAll(['TARIFF', 'VER_CUR']); }
+
+/** 시트에서 타리프 탭을 직접 고치면 바로 반영 (단순 트리거 · 따로 설치할 필요 없음) */
+function onEdit(e) {
+  try { if (e && e.range && e.range.getSheet().getName() === SHEET_TARIFF) dropCalcCache_(); } catch (x) { /* 무시 */ }
+}
+
+/** 관리자 화면 경고용: 0원·빈칸 개수 */
+function tariffWarn_() {
+  var t = readTariff_(), zeros = 0, first = null;
+  t.rows.forEach(function (r, i) { r.forEach(function (v, j) { if (!(v > 0)) { zeros++; if (!first) first = (i + 1) + 'km ' + (t.tons[j] || ''); } }); });
+  var s = getSettings_();
+  var tonMismatch = s.tons.map(function (x) { return x.name; }).join('|') !== t.tons.join('|');
+  return { zeros: zeros, first: first, rows: t.rows.length, tonMismatch: tonMismatch };
+}
+
+/* ───────────── 견적 금액 조정 · 구간 추가 ───────────── */
+
+var ADJ_MAX = 5000;
+function cleanAdj_(adj) {
+  if (!adj) return null;
+  var out = { rows: {}, cols: {}, cells: {} }, n = 0;
+  var num = function (v) { v = Math.round(Number(v)); if (!isFinite(v) || Math.abs(v) > 100000000) throw new Error('조정 금액이 올바르지 않습니다.'); return v; };
+  ['rows', 'cols', 'cells'].forEach(function (k) {
+    Object.keys(adj[k] || {}).forEach(function (key) {
+      var v = num(adj[k][key]);
+      if (k !== 'cells' && !v) return;
+      if (++n > ADJ_MAX) throw new Error('조정이 너무 많습니다. (최대 ' + ADJ_MAX + '개)');
+      out[k][String(key).slice(0, 60)] = v;
+    });
+  });
+  return n ? out : null;
+}
+function parseJson_(v, dflt) { try { return v ? JSON.parse(String(v)) : dflt; } catch (e) { return dflt; } }
+function addAdjLog_(row, session, note) {
+  var sh = quotesSheet_(), cell = sh.getRange(row, 18);
+  var list = parseJson_(cell.getValue(), []);
+  list.push({ at: now_(), by: session.name + ' (' + session.id + ')', note: String(note || '').slice(0, 300) });
+  if (list.length > 60) list = list.slice(-60);
+  cell.setValue(JSON.stringify(list));
+}
+
+/** 저장된 견적에 구간 추가: 견적 낼 때의 버전·밀크런 기준·경유가 그대로 계산해서 마지막에 붙임 */
+function quotesAddRoutes_(session, req) {
+  var found = quoteAccess_(session, req.id);
+  var data = readPacked_(SHEET_QDATA, found.data.id);
+  if (!data) throw new Error('견적 데이터가 없습니다.');
+  var pairs = (req.pairs || []).map(function (p) { return { origin: joilNormalizeAddress(p.origin), dest: joilNormalizeAddress(p.dest) }; })
+    .filter(function (p) { return p.origin && p.dest; });
+  if (!pairs.length) throw new Error('추가할 구간을 입력하세요.');
+  if (pairs.length > BATCH_CHUNK_MAX) throw new Error('한 번에 ' + BATCH_CHUNK_MAX + '건까지 추가할 수 있습니다.');
+  var meta = data.meta;
+  var ver = meta.ver ? loadVersion_(meta.ver) : null;
+  var out = quoteMany_(pairs, { baseTon: meta.baseTon, dieselMode: 'manual', dieselPrice: meta.diesel && meta.diesel.price }, ver);
+  if (meta.diesel) out.items.forEach(function (it) { if (it.result) it.result.dieselSource = meta.diesel.source; });
+  var maxNo = data.items.reduce(function (m, it) { return Math.max(m, Number(it.no) || 0); }, 0);
+  var added = [], failed = [], stamp = { at: now_(), by: session.name };
+  out.items.forEach(function (it, i) {
+    if (it.error) failed.push({ origin: pairs[i].origin, dest: pairs[i].dest, error: it.error });
+    else added.push({ no: ++maxNo, origin: pairs[i].origin, dest: pairs[i].dest, result: it.result, added: stamp });
+  });
+  if (added.length) {
+    var total = data.items.length + added.length;
+    var newMeta = JSON.parse(JSON.stringify(meta));
+    newMeta.type = '대량'; newMeta.count = total;
+    if (!newMeta.ver && !newMeta.verNote) newMeta.verNote = '버전 기록 이전 견적 · 추가 구간은 ' + stamp.at.slice(0, 10) + ' 기준';
+    appendPacked_(SHEET_QDATA, found.data.id, session.id, newMeta, added);
+    var sh = quotesSheet_();
+    sh.getRange(found.row, 9, 1, 2).setValues([['대량', total]]);
+    var origins = {};
+    data.items.concat(added).forEach(function (x) { origins[x.origin] = true; });
+    sh.getRange(found.row, 11, 1, 2).setValues([[Object.keys(origins).length === 1 ? data.items[0].origin : '여러 상차지', '하차지 ' + total + '곳']]);
+    sh.getRange(found.row, 15).setValue(now_());
+    addAdjLog_(found.row, session, '구간 ' + added.length + '건 추가' + (ver ? ' (견적 당시 기준 ' + meta.ver + ')' : ' (현재 기준)'));
+  }
+  var res = quotesGet_(session, req.id);
+  res.added = added.map(function (x) { return x.no; });
+  res.failed = failed;
+  res.usedVersion = ver ? meta.ver : null;
+  return res;
+}
+
 /* ───────────── 견적모음 ───────────── */
 
-var QUOTE_HEADER = ['견적ID', '저장일', '아이디', '이름', '견적명', '거래처', '메모', '상태', '종류', '건수', '상차지', '하차지', '원본기록ID', '조회일', '수정일', '실적연결'];
+var QUOTE_HEADER = ['견적ID', '저장일', '아이디', '이름', '견적명', '거래처', '메모', '상태', '종류', '건수', '상차지', '하차지', '원본기록ID', '조회일', '수정일', '실적연결', '조정', '조정기록'];
 var QUOTE_STATUS = ['작성', '제출', '수주', '미수주'];
 
 function quotesSheet_() {
@@ -678,7 +809,7 @@ function quoteRowToObj_(r) {
   return {
     id: String(r[0]), savedAt: fmt_(r[1]), userId: String(r[2]), userName: String(r[3]), name: String(r[4]), client: String(r[5]),
     memo: String(r[6]), status: String(r[7]), type: String(r[8]), count: r[9], from: String(r[10]), to: String(r[11]),
-    recordId: String(r[12]), queriedAt: fmt_(r[13]), updatedAt: fmt_(r[14]), link: parseLink_(r[15])
+    recordId: String(r[12]), queriedAt: fmt_(r[13]), updatedAt: fmt_(r[14]), link: parseLink_(r[15]), hasAdj: !!r[16]
   };
 }
 
@@ -714,7 +845,9 @@ function quotesSave_(session, req) {
   var from = isBatch ? (Object.keys(origins).length === 1 ? first.origin : '여러 상차지') : (first.result ? first.result.origin.address : first.origin);
   var to = isBatch ? '하차지 ' + snap.items.length + '곳' : (first.result ? first.result.dest.address : first.dest);
   var now = now_();
-  quotesSheet_().appendRow([id, now, session.id, session.name, f.name, f.client, f.memo, f.status, snap.meta.type, snap.items.length, from, to, log.recordId, log.at, now]);
+  var adj = cleanAdj_(req.adj);
+  quotesSheet_().appendRow([id, now, session.id, session.name, f.name, f.client, f.memo, f.status, snap.meta.type, snap.items.length, from, to, log.recordId, log.at, now, '', adj ? JSON.stringify(adj) : '',
+    JSON.stringify([{ at: now, by: session.name + ' (' + session.id + ')', note: '견적 저장' + (adj ? ' (조정 포함: ' + String(req.adjNote || '').slice(0, 200) + ')' : '') }])]);
   return { quote: findQuote_(id).data };
 }
 
@@ -745,13 +878,24 @@ function quotesGet_(session, id) {
   var found = quoteAccess_(session, id);
   var data = readPacked_(SHEET_QDATA, found.data.id);
   if (!data) throw new Error('견적 데이터가 없습니다.');
-  return { quote: found.data, meta: data.meta, items: data.items };
+  var row = quotesSheet_().getRange(found.row, 17, 1, 2).getValues()[0];
+  var meta = data.meta;
+  if (meta.ver) { var vs = SpreadsheetApp.getActive().getSheetByName(SHEET_VER); var vh = vs && vs.getLastRow() >= 2 && vs.getRange(2, 1, vs.getLastRow() - 1, 1).createTextFinder(meta.ver).matchEntireCell(true).findNext(); if (vh) meta.verAt = fmt_(vs.getRange(vh.getRow(), 2).getValue()); }
+  return { quote: found.data, meta: meta, items: data.items, adj: parseJson_(row[0], null), adjLog: parseJson_(row[1], []) };
 }
 
 function parseLink_(v) { try { return v ? JSON.parse(String(v)) : null; } catch (e) { return null; } }
 
 function quotesUpdate_(session, id, patch) {
   var found = quoteAccess_(session, id);
+  if (patch && patch.hasOwnProperty('adj')) {
+    var adj = cleanAdj_(patch.adj);
+    var cell = quotesSheet_().getRange(found.row, 17);
+    var s = adj ? JSON.stringify(adj) : '';
+    if (s.length > CELL_LIMIT) throw new Error('조정이 너무 많아 저장할 수 없습니다.');
+    cell.setValue(s);
+    addAdjLog_(found.row, session, patch.adjNote || (adj ? '금액 조정' : '조정 모두 해제'));
+  }
   if (patch && patch.hasOwnProperty('link')) {
     var l = patch.link;
     var clean = l ? { cust: String(l.cust || '').slice(0, 100), from: String(l.from || '').slice(0, 100), to: String(l.to || '').slice(0, 100), weight: String(l.weight || '').slice(0, 30),
@@ -780,9 +924,9 @@ function quotesDelete_(session, id) {
 }
 
 /** 공통: 주소 → 좌표 → 경로 → 계산. 한 건이 실패해도 나머지는 계속합니다. */
-function quoteMany_(pairs, req) {
-  var s = getSettings_();
-  var tariff = readTariff_();
+function quoteMany_(pairs, req, ver) {
+  var s = ver ? ver.settings : getSettings_();
+  var tariff = ver ? ver.tariff : readTariff_();
   var baseTon = joilFindTon(s, req.baseTon) || joilFindTon(s, s.milkrun.baseTon) || s.tons[0];
   var tollClass = Number(baseTon.tollClass) || 1;
 
@@ -893,6 +1037,7 @@ function clearCache_() {
   [SHEET_GEO_CACHE, SHEET_ROUTE_CACHE].forEach(function (n) { var sh = ss.getSheetByName(n); if (sh) ss.deleteSheet(sh); });
   // 스크립트 캐시는 키를 모두 알 수 없으므로 접두어를 바꿔서 무효화
   PropertiesService.getScriptProperties().setProperty('CACHE_GEN', String(Date.now()));
+  dropCalcCache_();
   return cacheInfo_();
 }
 
