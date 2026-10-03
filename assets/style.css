@@ -530,3 +530,91 @@ table.data.rpt tbody tr { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ── 회사 정보 (관리자) ── */
+.co-grid { display: grid; grid-template-columns: 1fr 180px; gap: 18px; align-items: start; }
+.co-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.co-fields .field { margin-bottom: 10px; }
+.co-fields .field.wide { grid-column: 1 / -1; }
+.co-stamp { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+.stamp-box { height: 140px; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); display: grid; place-items: center; background: repeating-conic-gradient(#fff 0 25%, var(--panel-2) 0 50%) 0 0 / 16px 16px; }
+.stamp-box img { max-width: 120px; max-height: 120px; }
+.co-stamp label.btn { text-align: center; cursor: pointer; }
+
+/* ── 견적서 ── */
+.qd-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.qd-warn { max-width: 900px; margin: 0 auto 10px; padding: 10px 14px; border-radius: var(--radius-sm); background: rgba(244, 190, 46, .25); color: #6A4E05; font-size: 13px; }
+.qd-page { padding-top: 0; }
+.qd-stripe { margin: 0 -36px; }
+.qd-title { text-align: center; font-size: 34px; letter-spacing: .5em; margin: 26px 0 22px; padding-left: .5em; }
+.qd-head { display: grid; grid-template-columns: 1fr 1.15fr; gap: 22px; align-items: start; }
+.qd-kv { display: flex; gap: 10px; font-size: 13px; padding: 3px 0; }
+.qd-kv span { width: 64px; color: var(--muted); flex: none; }
+.qd-recv { font-size: 21px; font-weight: 800; margin: 12px 0 6px; padding-bottom: 6px; border-bottom: 2px solid var(--ink); }
+.qd-recv small { font-size: 14px; font-weight: 600; margin-left: 4px; }
+.qd-lead { margin: 12px 0 0; font-size: 13.5px; }
+table.qd-sup { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.qd-sup th, table.qd-sup td { border: 1px solid var(--line-strong); padding: 6px 8px; text-align: left; vertical-align: middle; }
+table.qd-sup th { background: var(--panel-2); font-weight: 700; white-space: nowrap; width: 76px; }
+table.qd-sup th.qd-vert { width: 28px; text-align: center; line-height: 1.6; }
+table.qd-sup td { position: relative; }
+.qd-seal-wrap { position: relative; display: inline-block; margin-left: 10px; }
+.qd-seal-txt { color: var(--muted); }
+.qd-seal { position: absolute; left: 50%; top: 50%; width: 58px; height: 58px; object-fit: contain; transform: translate(-50%, -50%); mix-blend-mode: multiply; }
+.qd-sum { display: flex; align-items: baseline; gap: 14px; margin: 22px 0 12px; padding: 12px 16px; border: 2px solid var(--ink); border-radius: 8px; }
+.qd-sum span { font-weight: 700; }
+.qd-sum b { font-size: 19px; }
+.qd-sum small { margin-left: auto; color: var(--muted); }
+table.data.qd-table th { white-space: nowrap; }
+table.data.qd-table .pin { margin-right: 4px; }
+.qd-note { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 10px; }
+.qd-note h3 { font-size: 13.5px; margin: 0 0 6px; }
+.qd-note ul { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; }
+.qd-bank { margin-top: 12px; font-size: 13px; }
+.qd-bank span { font-weight: 700; margin-right: 6px; }
+.qd-foot { margin-top: 26px; padding-top: 10px; border-top: 2px solid var(--ink); font-size: 12px; text-align: center; color: var(--ink-2); }
+
+/* ── 서류함 ── */
+.doc-alert { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--radius-sm); background: rgba(224, 71, 46, .08); border: 1px solid rgba(224, 71, 46, .22); font-size: 13px; line-height: 1.9; }
+.doc-alert b { margin-right: 6px; }
+.badge.exp-x { background: rgba(224, 71, 46, .15); color: #A8331F; }
+.badge.exp-soon { background: rgba(244, 190, 46, .3); color: #6A4E05; }
+table.data.docs td { vertical-align: middle; }
+table.data.docs .left, table.data.qd-table .left { text-align: left; }
+table.data.docs th.chk, table.data.docs td.chk { width: 34px; text-align: center; }
+.doc-name { display: flex; gap: 10px; align-items: center; background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.doc-name:hover b { text-decoration: underline; }
+.doc-name span:last-child { display: flex; flex-direction: column; }
+.doc-name small { color: var(--muted); font-size: 11.5px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ficon { flex: none; width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center; font-family: var(--font-display); font-weight: 800; font-size: 11px; color: #fff; background: var(--ink-2); }
+.ficon.f-pdf { background: var(--red); } .ficon.f-img { background: var(--cyan); font-size: 16px; } .ficon.f-xls { background: var(--green); } .ficon.f-doc { background: #3D6CC0; }
+.ficon.big { width: 64px; height: 64px; font-size: 15px; margin: 0 auto 12px; }
+.doc-acts { white-space: nowrap; text-align: right; }
+.doc-acts .btn + .btn { margin-left: 4px; }
+.doc-meta { margin: -4px 0 12px; line-height: 1.6; }
+.doc-view { background: var(--panel-2); border-radius: var(--radius-sm); min-height: 200px; display: grid; place-items: center; overflow: hidden; }
+.doc-view img { max-width: 100%; max-height: 70vh; display: block; }
+.doc-view iframe { width: 100%; height: 70vh; border: 0; background: #fff; }
+.drop { display: block; border: 2px dashed var(--line-strong); border-radius: var(--radius); padding: 22px; text-align: center; cursor: pointer; margin-bottom: 14px; transition: border-color .15s, background .15s; line-height: 1.6; }
+.drop:hover, .drop.over { border-color: var(--accent); background: rgba(240, 122, 34, .06); }
+
+/* ── 견적 ↔ 실적 ── */
+.qlink h3 { margin: 2px 0 0; }
+
+@media (max-width: 980px) {
+  .co-grid { grid-template-columns: 1fr; }
+  .qd-head { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .co-fields, .qd-two { grid-template-columns: 1fr; }
+  .qd-title { font-size: 26px; }
+  .doc-name small { max-width: 160px; }
+}
+@media print {
+  .qd-stripe { margin: 0; }
+  .qd-head { grid-template-columns: 1fr 1.15fr; }
+  table.data.qd-table thead { display: table-header-group; }
+  table.data.qd-table tr { break-inside: avoid; }
+}
+#dBiz, #qdBiz, #dBizSel { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+#dBiz button, #qdBiz button, #dBizSel button { white-space: nowrap; flex: none; }

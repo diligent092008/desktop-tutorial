@@ -14,6 +14,8 @@
     calc: { origin: '', dest: '', dieselMode: null, dieselPrice: '', baseTon: null, tons: null, result: null },
     hist: { days: 30, type: '', userId: '', q: '', logs: null, users: null, detail: null, detailData: null },
     quotes: { q: '', status: '', list: null, detail: null, detailData: null },
+    docs: { list: null, biz: '', cat: '', q: '', sel: {}, blobs: {} },
+    companies: null, addr: null,
     an: null,
     bulk: { mode: 'one', origin: '', dests: '', pairsText: '', results: [], running: false, cancel: false, page: 0, sort: 'no', search: '', filter: 'all', detail: true, meta: null, opts: null },
     admin: { tab: 'basic', settings: null, keys: null, tariff: null, tariffDirty: false, settingsDirty: false, page: 0, users: null, logs: null }
@@ -57,14 +59,14 @@
    * - 조회성 요청(READ)은 오류·지연 시 1번 자동 재시도, 같은 요청이 동시에 겹치면 하나로 합침
    * - 저장·변경 요청은 중복 실행을 막기 위해 재시도하지 않음
    */
-  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory'];
+  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory', 'docs.list', 'docs.get', 'addr.list', 'companies'];
   var TIMEOUT_MS = 25000;
   var inflight = {};
 
   function sendOnce(req) {
     if (DEMO) return window.JoilDemo.call(req);
     var ctrl = window.AbortController ? new AbortController() : null;
-    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, /^(quoteBatch|admin\.saveTariff|analysis\.upload|analysis\.load)$/.test(req.action) ? 120000 : TIMEOUT_MS) : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, /^(quoteBatch|admin\.saveTariff|analysis\.upload|analysis\.load|docs\.upload|docs\.get|docs\.zip)$/.test(req.action) ? 120000 : TIMEOUT_MS) : null;
     // 캐시·쿠키가 끼어들지 않도록: 매번 고유 주소, 캐시 사용 안 함, 쿠키 안 보냄
     return fetch(API_URL + (API_URL.indexOf('?') === -1 ? '?' : '&') + '_t=' + Date.now() + Math.random().toString(36).slice(2, 6), {
       method: 'POST', body: JSON.stringify(req), cache: 'no-store', credentials: 'omit', redirect: 'follow',
@@ -222,6 +224,8 @@
     state.calc.recordId = null;
     state.hist = { days: 30, type: '', userId: '', q: '', logs: null, users: null, detail: null, detailData: null };
     state.quotes = { q: '', status: '', list: null, detail: null, detailData: null };
+    state.docs = { list: null, biz: '', cat: '', q: '', sel: {}, blobs: {} };
+    state.companies = null; state.addr = null;
     state.an = newAnState();
     storage('del', 'joil-token');
   }
@@ -244,7 +248,7 @@
 
   function navItems() {
     var items = [];
-    if (can('quote')) items.push(['calc', '단건 계산'], ['bulk', '대량 계산'], ['history', '조회기록'], ['quotes', '견적모음']);
+    if (can('quote')) items.push(['calc', '단건 계산'], ['bulk', '대량 계산'], ['history', '조회기록'], ['quotes', '견적모음'], ['docs', '서류함']);
     if (can('analysis')) items.push(['analysis', '분석']);
     if (state.user.role === 'admin') items.push(['admin', '관리자']);
     return items;
@@ -270,12 +274,13 @@
 
     $$('.nav button').forEach(function (b) {
       b.onclick = function () {
-        if (state.view === 'admin' && b.dataset.view !== 'admin' && (state.admin.tariffDirty || state.admin.settingsDirty || (state.admin.anMap && state.admin.anMap.dirty) || (state.admin.anRules && state.admin.anRules.dirty)) &&
+        if (state.view === 'admin' && b.dataset.view !== 'admin' && (state.admin.tariffDirty || state.admin.settingsDirty || (state.admin.anMap && state.admin.anMap.dirty) || (state.admin.anRules && state.admin.anRules.dirty) || state.admin.companyDirty) &&
           !confirm('저장하지 않은 관리자 변경사항이 있습니다. 이동할까요? (변경사항은 화면에 남아 있습니다)')) return;
         // 같은 메뉴를 다시 누르면 상세 화면에서 목록으로
         if (state.view === b.dataset.view) {
           if (state.view === 'history') { state.hist.detail = null; state.hist.logs = null; }
           if (state.view === 'quotes') { state.quotes.detail = null; state.quotes.list = null; }
+          if (state.view === 'docs') state.docs.list = null;
         }
         if (b.dataset.view === 'history' && state.view !== 'history') state.hist.logs = null;
         state.view = b.dataset.view; render();
@@ -296,6 +301,7 @@
     else if (state.view === 'bulk') renderBulk();
     else if (state.view === 'history') renderHistory();
     else if (state.view === 'quotes') renderQuotes();
+    else if (state.view === 'docs') renderDocs();
     else renderCalc();
   }
 
@@ -469,9 +475,9 @@
       '<form class="card" id="calcForm" autocomplete="off">' +
       '<div class="eyebrow">Route · 경로</div><h2 style="margin-bottom:18px">단건 견적</h2>' +
       '<div class="route-inputs">' +
-      '<div class="field"><label for="origin"><span class="pin from"></span>상차지</label><input class="input" id="origin" placeholder="예) 경기 평택시 포승읍 평택항로 …" value="' + esc(c.origin) + '"></div>' +
+      '<div class="field"><label for="origin"><span class="pin from"></span>상차지</label><input class="input" id="origin" list="addrList" placeholder="예) 경기 평택시 포승읍 평택항로 …" value="' + esc(c.origin) + '"></div>' +
       '<button type="button" class="swap-btn" id="swap" title="상차지·하차지 바꾸기" aria-label="상차지와 하차지 바꾸기">⇅</button>' +
-      '<div class="field"><label for="dest"><span class="pin to"></span>하차지</label><input class="input" id="dest" placeholder="예) 부산 강서구 녹산산단 …" value="' + esc(c.dest) + '"></div>' +
+      '<div class="field"><label for="dest"><span class="pin to"></span>하차지</label><input class="input" id="dest" list="addrList" placeholder="예) 부산 강서구 녹산산단 …" value="' + esc(c.dest) + '"></div>' +
       '</div><div class="section-gap"></div>' +
       optionsHtml() +
       '<div class="section-gap"></div><div class="section-gap"></div>' +
@@ -486,6 +492,7 @@
       $('#origin').value = c.origin; $('#dest').value = c.dest;
     };
     bindOptions(function () { if (c.result) renderResult(false); });
+    ensureAddrList();
 
     $('#calcForm').onsubmit = function (e) {
       e.preventDefault();
@@ -497,6 +504,7 @@
         .then(function (r) {
           if (!r.result.milkrun) throw new Error('서버 코드가 예전 버전입니다. 관리자가 Apps Script 코드를 최신으로 바꾸고 새 버전으로 배포해야 합니다. (SETUP.md "업데이트가 나왔을 때")');
           c.result = r.result; c.recordId = r.recordId || null; renderResult(true);
+          addrRemember([[c.origin.trim(), r.result.origin.address], [c.dest.trim(), r.result.dest.address]]);
         })
         .catch(function (err) { toast(err.message, 'err'); })
         .then(function () { busy(btn, false); });
@@ -567,7 +575,7 @@
         '<div class="card" style="--i:1;margin-top:16px">' +
         '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><div><div class="eyebrow">Quote · 톤수별 견적</div><h3>' + rows.length + '개 톤수</h3></div>' +
         '<div class="actions">' + (opts.recordId ? '<button class="btn btn-sm btn-primary" data-act="saveQuote">견적으로 저장</button>' : '') +
-        '<button class="btn btn-sm" data-act="copy">회신 문구 복사</button><button class="btn btn-sm" data-act="xlsx">엑셀 저장</button></div></div>' +
+        '<button class="btn btn-sm" data-act="qdoc">견적서</button><button class="btn btn-sm" data-act="copy">회신 문구 복사</button><button class="btn btn-sm" data-act="xlsx">엑셀 저장</button></div></div>' +
         (rows.length ? '<div class="table-wrap"><table class="data"><thead><tr>' +
           '<th>톤수</th><th>타리프</th><th>지역할증</th><th>하행할증</th><th>합계</th>' +
           '</tr></thead><tbody>' + rows.map(function (row, i) {
@@ -589,6 +597,10 @@
 
     var copyBtn = $('[data-act="copy"]', box), xBtn = $('[data-act="xlsx"]', box), sBtn = $('[data-act="saveQuote"]', box);
     if (sBtn) sBtn.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }); };
+    var qdBtn = $('[data-act="qdoc"]', box);
+    if (qdBtn) qdBtn.onclick = function () {
+      openQuoteDoc({ type: '단건', items: [{ result: r }], tons: opts.tons, client: opts.client || '', meta: { baseTon: r.milkrun.ton, roundTrip: r.milkrun.roundTrip, diesel: { price: r.milkrun.dieselPrice } } });
+    };
     if (copyBtn) copyBtn.onclick = function () {
       copyText(quoteText(r, rows)).then(function () { toast('회신 문구를 복사했습니다.'); });
     };
@@ -660,7 +672,7 @@
       '<div class="segmented" id="modeSeg"><button type="button" data-m="one" class="' + (b.mode === 'one' ? 'on' : '') + '">상차지 1곳 → 여러 하차지</button><button type="button" data-m="pairs" class="' + (b.mode === 'pairs' ? 'on' : '') + '">상·하차지 2열 붙여넣기</button></div></div>' +
       '<div class="bulk-grid"><div>' +
       (b.mode === 'one'
-        ? '<div class="field"><label for="bOrigin"><span class="pin from"></span>상차지</label><input class="input" id="bOrigin" value="' + esc(b.origin) + '" placeholder="예) 경기 평택시 포승읍 평택항로 …"></div>' +
+        ? '<div class="field"><label for="bOrigin"><span class="pin from"></span>상차지</label><input class="input" id="bOrigin" list="addrList" value="' + esc(b.origin) + '" placeholder="예) 경기 평택시 포승읍 평택항로 …"></div>' +
           '<div class="field"><label for="bDests"><span class="pin to"></span>하차지 목록 <span class="muted">(한 줄에 하나, 엑셀 열 복사 가능)</span></label><textarea class="input" id="bDests" placeholder="부산 강서구 녹산산단321로 …&#10;대구 달서구 성서공단로 …&#10;광주 광산구 하남산단 …">' + esc(b.dests) + '</textarea></div>'
         : '<div class="field"><label for="bPairs">엑셀에서 <b>상차지 · 하차지</b> 두 열을 복사해 붙여넣으세요</label><textarea class="input" id="bPairs" placeholder="경기 평택시 …&#9;부산 강서구 …&#10;인천 서구 …&#9;대구 달서구 …">' + esc(b.pairsText) + '</textarea>' +
           '<span class="hint">칸 구분은 탭(엑셀 복사) 또는 | 기호 · 첫 줄이 "상차지/하차지" 제목이면 건너뜁니다</span></div>') +
@@ -684,6 +696,7 @@
       $('#bPairs').oninput = function () { b.pairsText = this.value; updateCount(); };
     }
     bindOptions(function () { if (b.results.length) renderBulkResult(); });
+    ensureAddrList();
     $('#bulkRun').onclick = function () { startBulk(); };
     $('#bulkStop').onclick = function () { b.cancel = true; this.disabled = true; this.textContent = '중지하는 중…'; };
 
@@ -889,6 +902,7 @@
       '<p class="muted small" style="margin:4px 0 0">평균 거리 ' + won(avg) + 'km' + (meta.diesel ? ' · 경유가 ' + won(meta.diesel.price) + '원/L (' + esc(meta.diesel.source) + ')' : '') + ' · 지역할증은 톤수별 합계에 포함</p></div>' +
       '<div class="actions">' + (opts.live && fail && !b.running ? '<button class="btn btn-sm btn-danger" data-act="retry">실패 ' + won(fail) + '건 다시 계산</button>' : '') +
       (opts.recordId && !b.running ? '<button class="btn btn-sm" data-act="saveQuote">견적으로 저장</button>' : '') +
+      (!b.running && okRows.length ? '<button class="btn btn-sm" data-act="qdoc">견적서</button>' : '') +
       '<button class="btn btn-sm btn-primary" data-act="xlsx"' + (okRows.length ? '' : ' disabled') + '>엑셀 다운로드</button></div></div>' +
       '<div class="toolbar">' +
       '<input class="input input-sm" data-el="search" placeholder="주소 검색" value="' + esc(b.search || '') + '" style="max-width:240px">' +
@@ -918,6 +932,12 @@
     var rt = $('[data-act="retry"]', box); if (rt) rt.onclick = retryFailed;
     var sv = $('[data-act="saveQuote"]', box); if (sv) sv.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }); };
     $('[data-act="xlsx"]', box).onclick = function () { exportBulk(this, b, opts); };
+    var qd = $('[data-act="qdoc"]', box);
+    if (qd) qd.onclick = function () {
+      var first = okRows[0] && okRows[0].result.milkrun;
+      openQuoteDoc({ type: '대량', items: bulkView(Object.assign({}, b, { filter: 'all', search: '' })), tons: tons, client: opts.client || '',
+        meta: { baseTon: meta.baseTon || (first && first.ton), roundTrip: first ? first.roundTrip : opts.roundTrip, diesel: meta.diesel || (first && { price: first.dieselPrice }) } });
+    };
   }
 
   function exportBulk(btn, b, opts) {
@@ -1018,13 +1038,13 @@
   }
 
   /** 스냅샷 본문을 box에 그립니다. 금액은 저장 당시 그대로. */
-  function renderSnapshot(meta, items, box, holder, recordId) {
+  function renderSnapshot(meta, items, box, holder, recordId, client) {
     var tons = meta.tons || state.pub.tons;
     var fileDate = String(meta.at || '').slice(0, 10) || today();
     if (meta.type === '단건') {
       var it = items[0];
       if (!it || !it.result) { box.innerHTML = '<div class="card muted">결과가 없습니다.</div>'; return; }
-      renderSingleView(it.result, box, { tons: tons, animate: false, recordId: recordId, fileDate: fileDate });
+      renderSingleView(it.result, box, { tons: tons, animate: false, recordId: recordId, fileDate: fileDate, client: client });
       return;
     }
     if (!holder.bulk) {
@@ -1034,7 +1054,7 @@
       };
     }
     renderBulkView(holder.bulk, box, {
-      live: false, animate: false, tons: tons, roundTrip: meta.roundTrip, recordId: recordId, fileDate: fileDate,
+      live: false, animate: false, tons: tons, roundTrip: meta.roundTrip, recordId: recordId, fileDate: fileDate, client: client,
       when: meta.at, who: meta.user ? meta.user.name + ' (' + meta.user.id + ')' : ''
     });
   }
@@ -1219,7 +1239,7 @@
     var qs = state.quotes, id = qs.detail;
     $('#main').innerHTML =
       '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><button class="btn btn-sm" id="qBack">← 견적모음</button><div class="actions" id="qActs"></div></div>' +
-      '<div id="qHead"><div class="card muted"><span class="spinner dark"></span> 견적을 불러오는 중…</div></div><div id="qBody" style="margin-top:16px"></div>';
+      '<div id="qHead"><div class="card muted"><span class="spinner dark"></span> 견적을 불러오는 중…</div></div><div id="qLink" style="margin-top:16px"></div><div id="qBody" style="margin-top:16px"></div>';
     $('#qBack').onclick = function () { qs.detail = null; qs.detailData = null; renderQuotes(); };
     var show = function (d) {
       if (state.view !== 'quotes' || qs.detail !== id) return;
@@ -1247,7 +1267,7 @@
       };
       $('#qActs').innerHTML = '<button class="btn btn-sm" id="qRecalc">현재 단가로 다시 계산</button>';
       $('#qRecalc').onclick = function () { recalcNow(d.meta, d.items); };
-      if (!d.drawn) { renderSnapshot(d.meta, d.items, $('#qBody'), d, null); d.drawn = true; }
+      if (!d.drawn) { renderSnapshot(d.meta, d.items, $('#qBody'), d, null, q.client); d.drawn = true; drawQuoteLink(d, $('#qLink')); }
     };
     if (qs.detailData) { qs.detailData.drawn = false; return show(qs.detailData); }
     api('quotes.get', { id: id }).then(function (d) { qs.detailData = d; show(d); }).catch(function (err) {
@@ -2811,6 +2831,7 @@
     ['anmap', '매출처 설정', 'var(--yellow)'],
     ['anrule', '분석 규칙', 'var(--red)'],
     ['diesel', '유가 기록', 'var(--cyan)'],
+    ['company', '회사 정보', 'var(--green)'],
     ['keys', 'API 키', 'var(--ink-2)']
   ];
 
@@ -2856,7 +2877,7 @@
 
   function showAdminTab() {
     var a = state.admin, tab = a.tab;
-    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, keys: adminKeys, andata: adminAnData, anmap: adminAnMap, anrule: adminAnRules, diesel: adminDiesel };
+    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, keys: adminKeys, andata: adminAnData, anmap: adminAnMap, anrule: adminAnRules, diesel: adminDiesel, company: adminCompany };
     var ready = a.loaded && (tab !== 'tariff' || a.tariff);
     if (ready) {
       views[tab]();
@@ -3298,6 +3319,597 @@
       var btn = this; busy(btn, true, '확인 중…');
       api('admin.testKakao').then(function (r) { toast(r.message); }).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
     };
+  }
+
+  /* ───────── 주소 자동완성 (B2) ───────── */
+  /* 지금까지 조회한 주소 + 분석 데이터의 발지·착지 이름을 입력칸 추천 목록으로 */
+
+  function ensureAddrList() {
+    var dl = document.getElementById('addrList');
+    if (!dl) { dl = document.createElement('datalist'); dl.id = 'addrList'; document.body.appendChild(dl); }
+    if (state.addr || state.addrLoading || !can('quote')) return;
+    state.addrLoading = true;
+    api('addr.list').then(function (r) {
+      state.addr = r.list || [];
+      fillAddrList();
+    }).catch(function () { state.addr = []; }).then(function () { state.addrLoading = false; });
+  }
+  function fillAddrList() {
+    var dl = document.getElementById('addrList'); if (!dl) return;
+    var seen = {}, opts = [];
+    (state.addr || []).forEach(function (x) { if (!seen[x[0]]) { seen[x[0]] = true; opts.push([x[0], x[1] && x[1] !== x[0] ? x[1] : '']); } });
+    if (state.an && state.an.rows) {
+      var names = {};
+      state.an.rows.forEach(function (r) { names[r[C.from]] = 1; names[r[C.to]] = 1; });
+      Object.keys(names).forEach(function (n) { if (n && n.length > 1 && !seen[n]) { seen[n] = true; opts.push([n, '실적 지명']); } });
+    }
+    dl.innerHTML = opts.slice(0, 5000).map(function (o) { return '<option value="' + esc(o[0]) + '"' + (o[1] ? ' label="' + esc(o[1]) + '"' : '') + '>'; }).join('');
+  }
+  function addrRemember(list) {
+    if (!state.addr) return;
+    var have = {}; state.addr.forEach(function (x) { have[x[0]] = true; });
+    list.forEach(function (x) { if (x && x[0] && !have[x[0]]) { have[x[0]] = true; state.addr.unshift(x); } });
+    fillAddrList();
+  }
+
+  /* ───────── 회사 정보 (견적서 공급자) ───────── */
+
+  var BIZ_LIST = ['조일물류', '명일로지스', '조일로지스'];
+  var COMPANY_FIELDS = [
+    ['name', '상호', '예) 주식회사 조일물류'], ['ceo', '대표자', ''], ['bizNo', '사업자등록번호', '000-00-00000'],
+    ['addr', '주소', ''], ['tel', '전화', ''], ['fax', '팩스', ''], ['email', '이메일', ''], ['manager', '견적 담당', '예) 일반팀 홍길동 대리 010-0000-0000'],
+    ['bank', '입금 계좌', '예) 기업은행 000-000000-00-000 (주)조일물류']
+  ];
+
+  function loadCompanies(force) {
+    if (state.companies && !force) return Promise.resolve(state.companies);
+    return api('companies').then(function (r) { state.companies = r.companies || {}; return state.companies; });
+  }
+
+  /** 직인 이미지: 흰 배경을 투명하게 하고 작게 줄여서 PNG data-URL로 (시트 칸 1개에 들어가도록) */
+  function stampFromFile(file) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image(), url = URL.createObjectURL(file);
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        var sizes = [220, 180, 150, 120, 96];
+        for (var i = 0; i < sizes.length; i++) {
+          var k = Math.min(1, sizes[i] / Math.max(img.width, img.height));
+          var cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(img.width * k)); cv.height = Math.max(1, Math.round(img.height * k));
+          var g = cv.getContext('2d'); g.drawImage(img, 0, 0, cv.width, cv.height);
+          var px = g.getImageData(0, 0, cv.width, cv.height), d = px.data;
+          for (var p = 0; p < d.length; p += 4) { if (d[p] > 225 && d[p + 1] > 225 && d[p + 2] > 225) d[p + 3] = 0; }
+          g.putImageData(px, 0, 0);
+          var out = cv.toDataURL('image/png');
+          if (out.length < 44000) return resolve(out);
+        }
+        reject(new Error('이미지가 너무 복잡해요. 직인만 잘라낸 작은 이미지로 올려 주세요.'));
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('이미지를 읽을 수 없습니다.')); };
+      img.src = url;
+    });
+  }
+
+  function adminCompany() {
+    var body = $('#adminBody');
+    if (!state.admin.companies) {
+      adminLoading('회사 정보 불러오는 중…');
+      loadCompanies(true).then(function (c) { state.admin.companies = clone(c); if (state.admin.tab === 'company') adminCompany(); })
+        .catch(function (err) { body.innerHTML = '<div class="card"><p style="margin:0">' + esc(err.message) + '</p></div>'; });
+      return;
+    }
+    var cs = state.admin.companies;
+    body.innerHTML =
+      '<div class="card"><div class="eyebrow">Company · 회사 정보</div><h2>견적서 공급자 정보</h2>' +
+      '<p class="muted small" style="margin:6px 0 18px">견적서를 만들 때 고른 사업자의 정보와 직인이 들어갑니다. 직인은 흰 배경을 자동으로 투명하게 바꿔요.</p>' +
+      BIZ_LIST.map(function (biz) {
+        var c = cs[biz] || {};
+        return '<div class="group co-group" data-biz="' + esc(biz) + '"><div class="group-head"><h3>' + esc(biz) + '</h3>' +
+          '<span class="status-pill ' + (c.name ? 'ok' : 'no') + '">' + (c.name ? '입력됨' : '미입력') + '</span></div>' +
+          '<div class="co-grid"><div class="co-fields">' + COMPANY_FIELDS.map(function (f) {
+            return '<div class="field' + (f[0] === 'addr' || f[0] === 'bank' || f[0] === 'manager' ? ' wide' : '') + '"><label>' + f[1] + '</label><input class="input input-sm" data-k="' + f[0] + '" value="' + esc(c[f[0]] || '') + '" placeholder="' + esc(f[2]) + '" maxlength="200"></div>';
+          }).join('') + '</div>' +
+          '<div class="co-stamp"><div class="stamp-box">' + (c.stamp ? '<img src="' + esc(c.stamp) + '" alt="직인">' : '<span class="muted small">직인 없음</span>') + '</div>' +
+          '<label class="btn btn-sm">직인 이미지<input type="file" accept="image/png,image/jpeg,image/webp" data-stamp hidden></label>' +
+          (c.stamp ? '<button class="btn btn-sm btn-ghost" data-unstamp>지우기</button>' : '') + '</div></div></div>';
+      }).join('') +
+      saveBar(state.admin.companyDirty, '회사 정보 저장') + '</div>';
+    $$('.co-group', body).forEach(function (g) {
+      var biz = g.dataset.biz, c = cs[biz] || (cs[biz] = {});
+      $$('input[data-k]', g).forEach(function (inp) { inp.oninput = function () { c[inp.dataset.k] = inp.value; markDirty(); }; });
+      $('[data-stamp]', g).onchange = function () {
+        var file = this.files[0]; if (!file) return;
+        stampFromFile(file).then(function (u) { c.stamp = u; markDirty(); adminCompany(); }).catch(function (err) { toast(err.message, 'err'); });
+      };
+      var un = $('[data-unstamp]', g); if (un) un.onclick = function () { c.stamp = ''; markDirty(); adminCompany(); };
+    });
+    function markDirty() { if (!state.admin.companyDirty) { state.admin.companyDirty = true; var s = $('.save-bar .small', body); if (s) s.innerHTML = '<span class="dirty-dot"></span>저장하지 않은 변경사항'; } }
+    $('#saveBtn').onclick = function () {
+      var btn = this; busy(btn, true, '저장 중…');
+      api('admin.saveCompanies', { companies: cs }).then(function (r) {
+        state.companies = r.companies; state.admin.companies = clone(r.companies); state.admin.companyDirty = false;
+        toast('회사 정보를 저장했습니다.'); adminCompany();
+      }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+    };
+  }
+
+  /* ───────── 견적서 (B3) ───────── */
+  /*
+   * src: { type: '단건'|'대량', items: [{ origin, dest, result }], tons, meta: { baseTon, roundTrip, diesel } }
+   * 설정 창 → 미리보기(인쇄/PDF) · 엑셀
+   */
+  function openQuoteDoc(src) {
+    var pref = local('get', 'joil-qdoc') || {};
+    var ok = src.items.filter(function (x) { return x.result; });
+    if (!ok.length) return toast('견적서에 넣을 성공한 결과가 없습니다.', 'err');
+    var allTons = state.pub.tons;
+    var defTons = (src.tons || allTons).filter(function (t) { return allTons.indexOf(t) !== -1; });
+    if (src.type === '대량' && defTons.length > 4) defTons = defTons.slice(0, 4);
+    var o = {
+      biz: BIZ_LIST.indexOf(pref.biz) !== -1 ? pref.biz : BIZ_LIST[0], to: src.client || '', ref: '', date: today(),
+      valid: pref.valid || '견적일로부터 30일', tons: defTons, milkrun: !!pref.milkrun, vat: pref.vat !== false,
+      note: pref.note != null ? pref.note : (state.pub.quoteFooter || '')
+    };
+    modal({
+      eyebrow: '견적서', title: '견적서 만들기 · ' + (src.type === '대량' ? won(ok.length) + '개 경로' : '1개 경로'),
+      body:
+        '<div class="field"><label>공급자 (보내는 사업자)</label><div class="segmented" id="qdBiz">' + BIZ_LIST.map(function (b) { return '<button type="button" data-v="' + b + '" class="' + (o.biz === b ? 'on' : '') + '">' + b + '</button>'; }).join('') + '</div></div>' +
+        '<div class="qd-two"><div class="field"><label>받는 곳 (거래처)</label><input class="input" id="qdTo" value="' + esc(o.to) + '" placeholder="예) (주)○○○ 물류팀"></div>' +
+        '<div class="field"><label>참조 (담당자)</label><input class="input" id="qdRef" placeholder="예) 김○○ 과장님"></div></div>' +
+        '<div class="qd-two"><div class="field"><label>견적일</label><input class="input" id="qdDate" type="date" value="' + esc(o.date) + '"></div>' +
+        '<div class="field"><label>유효기간</label><input class="input" id="qdValid" value="' + esc(o.valid) + '"></div></div>' +
+        '<div class="field"><label>넣을 톤수 ' + (src.type === '대량' ? '<span class="muted">(가로 폭 때문에 최대 6개)</span>' : '') + '</label><div class="chips" id="qdTons">' + allTons.map(function (t) {
+          return '<button type="button" class="chip' + (o.tons.indexOf(t) !== -1 ? ' on' : '') + '" data-t="' + esc(t) + '">' + esc(t) + '</button>';
+        }).join('') + '</div></div>' +
+        '<div class="field"><label class="toggle"><input type="checkbox" id="qdMr"' + (o.milkrun ? ' checked' : '') + '><span class="track"></span>밀크런 유류비 + 통행료 함께 표시 (' + esc(src.meta.baseTon || '') + ' 기준)</label></div>' +
+        '<div class="field"><label class="toggle"><input type="checkbox" id="qdVat"' + (o.vat ? ' checked' : '') + '><span class="track"></span>"부가세 별도" 표시</label></div>' +
+        '<div class="field"><label>비고</label><textarea class="input memo" id="qdNote" maxlength="1000">' + esc(o.note) + '</textarea></div>',
+      foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="qdGo">미리보기</button>',
+      onMount: function (m, close) {
+        $$('#qdTons .chip', m).forEach(function (ch) { ch.onclick = function () { ch.classList.toggle('on'); }; });
+        $$('#qdBiz button', m).forEach(function (b) { b.onclick = function () { $$('#qdBiz button', m).forEach(function (x) { x.classList.toggle('on', x === b); }); }; });
+        $('#qdGo', m).onclick = function () {
+          o.biz = $('#qdBiz button.on', m).dataset.v; o.to = $('#qdTo', m).value.trim(); o.ref = $('#qdRef', m).value.trim();
+          o.date = $('#qdDate', m).value || today(); o.valid = $('#qdValid', m).value.trim(); o.note = $('#qdNote', m).value;
+          o.milkrun = $('#qdMr', m).checked; o.vat = $('#qdVat', m).checked;
+          o.tons = $$('#qdTons .chip.on', m).map(function (x) { return x.dataset.t; });
+          if (!o.tons.length && !o.milkrun) return toast('톤수를 하나 이상 고르세요.', 'err');
+          if (src.type === '대량' && o.tons.length > 6) return toast('대량 견적서는 톤수를 6개까지 넣을 수 있어요.', 'err');
+          local('set', 'joil-qdoc', { biz: o.biz, valid: o.valid, milkrun: o.milkrun, vat: o.vat, note: o.note });
+          var btn = this; busy(btn, true, '준비 중…');
+          loadCompanies().catch(function () { return {}; }).then(function (cs) { close(); showQuoteDoc(src, o, (cs || {})[o.biz] || {}); });
+        };
+      }
+    });
+  }
+
+  function showQuoteDoc(src, o, co) {
+    var ok = src.items.filter(function (x) { return x.result; });
+    var no = 'Q' + o.date.replace(/-/g, '') + '-' + ('0' + new Date().getHours()).slice(-2) + ('0' + new Date().getMinutes()).slice(-2);
+    var coName = co.name || o.biz;
+    var priceOf = function (r, t) {
+      if (r.overMax) return null;
+      var x = r.rows.filter(function (y) { return y.ton === t; })[0];
+      return x ? x.total : null;
+    };
+    var cell = function (v) { return v == null ? '<td class="num muted">별도 문의</td>' : '<td class="num">' + won(v) + '</td>'; };
+    var bodyHtml, xlsRows;
+    var mrLabel = '유류비+통행료 (' + (src.meta.baseTon || '') + (src.meta.roundTrip ? ' 왕복' : ' 편도') + ')';
+    if (src.type === '단건') {
+      var r = ok[0].result;
+      bodyHtml = '<table class="data rpt qd-table"><thead><tr><th class="left">구간</th><th>운행거리</th>' + o.tons.map(function (t) { return '<th>' + esc(t) + '</th>'; }).join('') + (o.milkrun ? '<th>' + esc(mrLabel) + '</th>' : '') + '</tr></thead><tbody>' +
+        '<tr><td class="left"><span class="pin from"></span>' + esc(r.origin.address) + '<br><span class="pin to"></span>' + esc(r.dest.address) + '</td><td class="num">약 ' + r.distanceKm + 'km</td>' +
+        o.tons.map(function (t) { return cell(priceOf(r, t)); }).join('') + (o.milkrun ? cell(r.milkrun.total) : '') + '</tr></tbody></table>';
+      xlsRows = [['상차지', '하차지', '운행거리(km)'].concat(o.tons).concat(o.milkrun ? [mrLabel] : [])].concat([[r.origin.address, r.dest.address, r.distanceKm].concat(o.tons.map(function (t) { var v = priceOf(r, t); return v == null ? '별도 문의' : v; })).concat(o.milkrun ? [r.milkrun.total] : [])]);
+    } else {
+      bodyHtml = '<table class="data rpt qd-table"><thead><tr><th>No</th><th class="left">상차지</th><th class="left">하차지</th><th>거리</th>' + o.tons.map(function (t) { return '<th>' + esc(t) + '</th>'; }).join('') + (o.milkrun ? '<th>' + esc(mrLabel) + '</th>' : '') + '</tr></thead><tbody>' +
+        ok.map(function (x, i) {
+          var rr = x.result;
+          return '<tr><td class="num muted">' + (i + 1) + '</td><td class="left">' + esc(rr.origin.address) + '</td><td class="left">' + esc(rr.dest.address) + '</td><td class="num">' + rr.distanceKm + 'km</td>' +
+            o.tons.map(function (t) { return cell(priceOf(rr, t)); }).join('') + (o.milkrun ? cell(rr.milkrun.total) : '') + '</tr>';
+        }).join('') + '</tbody></table>';
+      xlsRows = [['No', '상차지', '하차지', '거리(km)'].concat(o.tons).concat(o.milkrun ? [mrLabel] : [])].concat(ok.map(function (x, i) {
+        var rr = x.result;
+        return [i + 1, rr.origin.address, rr.dest.address, rr.distanceKm].concat(o.tons.map(function (t) { var v = priceOf(rr, t); return v == null ? '별도 문의' : v; })).concat(o.milkrun ? [rr.milkrun.total] : []);
+      }));
+    }
+    var noteLines = [];
+    if (o.vat && !/부가세/.test(o.note || '')) noteLines.push('위 금액은 부가세 별도입니다.');
+    if (o.milkrun) noteLines.push('유류비는 경유 ' + won(src.meta.diesel ? src.meta.diesel.price : '') + '원/L 기준이며 유가 변동에 따라 달라질 수 있습니다.');
+    String(o.note || '').split('\n').forEach(function (l) { if (l.trim()) noteLines.push(l.trim()); });
+    var supplier = [['상호', coName], ['대표자', co.ceo], ['사업자번호', co.bizNo], ['주소', co.addr], ['전화', [co.tel, co.fax ? '팩스 ' + co.fax : ''].filter(Boolean).join(' · ')], ['담당', [co.manager, co.email].filter(Boolean).join(' · ')]];
+    var missing = !co.name;
+    var html =
+      '<div class="rpt-bar no-print"><span class="muted small">견적서 미리보기 · 인쇄 창에서 "PDF로 저장"을 고르면 PDF가 돼요</span><span class="spacer"></span>' +
+      '<button class="btn btn-sm" id="qdX">엑셀</button><button class="btn btn-sm btn-primary" id="qdPrint">인쇄 / PDF 저장</button><button class="btn btn-sm" id="qdClose">닫기</button></div>' +
+      (missing ? '<div class="qd-warn no-print">' + esc(o.biz) + ' 회사 정보가 비어 있어요. ' + (state.user.role === 'admin' ? '<b>관리자 → 회사 정보</b>에서 입력하면 상호·사업자번호·직인이 들어갑니다.' : '관리자에게 회사 정보 입력을 요청하세요.') + '</div>' : '') +
+      '<div class="rpt-page qd-page">' +
+      '<div class="stripe-bar qd-stripe"></div>' +
+      '<h1 class="qd-title">견 적 서</h1>' +
+      '<div class="qd-head"><div class="qd-to">' +
+      '<div class="qd-kv"><span>견적번호</span><b>' + esc(no) + '</b></div>' +
+      '<div class="qd-kv"><span>견적일</span><b>' + esc(o.date) + '</b></div>' +
+      (o.valid ? '<div class="qd-kv"><span>유효기간</span><b>' + esc(o.valid) + '</b></div>' : '') +
+      '<div class="qd-recv">' + (o.to ? esc(o.to) + ' <small>귀하</small>' : '<span class="muted">받는 곳 귀하</span>') + '</div>' +
+      (o.ref ? '<div class="qd-kv"><span>참조</span><b>' + esc(o.ref) + '</b></div>' : '') +
+      '<p class="qd-lead">아래와 같이 견적합니다.</p></div>' +
+      '<table class="qd-sup"><tbody>' + supplier.map(function (s, i) {
+        return '<tr>' + (i === 0 ? '<th rowspan="' + supplier.length + '" class="qd-vert">공<br>급<br>자</th>' : '') + '<th>' + s[0] + '</th><td>' + esc(s[1] || '') +
+          (s[0] === '대표자' && co.stamp ? '<span class="qd-seal-wrap"><span class="qd-seal-txt">(인)</span><img class="qd-seal" src="' + esc(co.stamp) + '" alt=""></span>' : (s[0] === '대표자' ? ' <span class="muted">(인)</span>' : '')) + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div class="qd-sum"><span>견적 금액</span><b>' + (src.type === '단건' && o.tons.length === 1 && priceOf(ok[0].result, o.tons[0]) != null ? '일금 ' + won(priceOf(ok[0].result, o.tons[0])) + '원정 (' + esc(o.tons[0]) + ')' : '아래 표 참조') + '</b>' + (o.vat ? '<small>부가세 별도</small>' : '') + '</div>' +
+      bodyHtml +
+      (noteLines.length ? '<div class="qd-note"><h3>비고</h3><ul>' + noteLines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul></div>' : '') +
+      (co.bank ? '<div class="qd-bank"><span>입금 계좌</span> ' + esc(co.bank) + '</div>' : '') +
+      '<footer class="qd-foot"><b>' + esc(coName) + '</b>' + (co.addr ? ' · ' + esc(co.addr) : '') + (co.tel ? ' · ' + esc(co.tel) : '') + '</footer></div>';
+    var wrap = document.createElement('div');
+    wrap.id = 'report';
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap);
+    document.body.classList.add('report-open');
+    window.scrollTo(0, 0);
+    function close() { wrap.remove(); document.body.classList.remove('report-open'); }
+    $('#qdClose').onclick = close;
+    $('#qdPrint').onclick = function () { window.print(); };
+    $('#qdX').onclick = function () {
+      var btn = this; busy(btn, true, '…');
+      var head = [['견 적 서'], [], ['견적번호', no], ['견적일', o.date], ['유효기간', o.valid], ['받는 곳', o.to ? o.to + ' 귀하' : ''], ['참조', o.ref], [],
+        ['공급자'], ['상호', coName], ['대표자', co.ceo || ''], ['사업자번호', co.bizNo || ''], ['주소', co.addr || ''], ['전화', co.tel || ''], ['팩스', co.fax || ''], ['담당', co.manager || ''], ['이메일', co.email || ''], []];
+      var tail = [[]].concat(noteLines.map(function (l) { return ['비고', l]; })).concat(co.bank ? [['입금 계좌', co.bank]] : []);
+      downloadXlsx('견적서_' + (o.to || coName).replace(/[\\/:*?"<>|]/g, '_') + '_' + o.date + '.xlsx', [
+        { name: '견적서', rows: head.concat(xlsRows).concat(tail), widths: src.type === '단건' ? [34, 34, 12].concat(o.tons.map(function () { return 12; })).concat([16]) : [6, 34, 34, 9].concat(o.tons.map(function () { return 12; })).concat([16]) }
+      ]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+    };
+  }
+
+  /* ───────── 서류함 ───────── */
+
+  var DOC_CATS = ['사업자등록증', '통장사본', '법인등기부등본', '인감증명서', '운송사업 허가증', '보험증권', '계약서', '견적서 양식', '기타'];
+  var DOC_MAX = 20 * 1024 * 1024;
+
+  function docDays(d) {
+    if (!d.expires) return null;
+    var t = new Date(today() + 'T00:00:00'), e = new Date(d.expires + 'T00:00:00');
+    return Math.round((e - t) / 86400000);
+  }
+  function docBadge(d) {
+    var n = docDays(d);
+    if (n == null) return '<span class="muted small">–</span>';
+    if (n < 0) return '<span class="badge exp-x">만료됨</span> <span class="small muted">' + esc(d.expires) + '</span>';
+    if (n <= 30) return '<span class="badge exp-soon">D-' + n + '</span> <span class="small muted">' + esc(d.expires) + '</span>';
+    return '<span class="small">' + esc(d.expires) + '</span>';
+  }
+  function fileSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1024)) + 'KB'; }
+  function docKind(d) {
+    var m = d.mime || '', ext = (d.fileName.match(/\.([^.]+)$/) || ['', ''])[1].toLowerCase();
+    if (/^image\//.test(m)) return 'img';
+    if (m === 'application/pdf' || ext === 'pdf') return 'pdf';
+    if (/sheet|excel/.test(m) || /^xlsx?$|^csv$/.test(ext)) return 'xls';
+    if (/word|hwp/.test(m) || /^docx?$|^hwpx?$/.test(ext)) return 'doc';
+    return 'etc';
+  }
+  var DOC_ICON = { img: '🖼', pdf: 'PDF', xls: 'XLS', doc: 'DOC', etc: 'FILE' };
+
+  function renderDocs() {
+    var ds = state.docs;
+    $('#main').innerHTML =
+      '<div class="card">' +
+      '<div class="row-between" style="flex-wrap:wrap;margin-bottom:14px"><div><div class="eyebrow">Documents · 서류함</div><h2>회사 서류함</h2>' +
+      '<p class="muted small" style="margin:6px 0 0">사업자등록증·통장사본·허가증·견적서 양식 등을 보관하고 바로 미리보기·다운로드합니다. 파일은 회사 구글 드라이브 비공개 폴더에 저장돼요.</p></div>' +
+      '<div class="actions"><button class="btn btn-sm" id="dReload">새로고침</button><button class="btn btn-sm btn-primary" id="dUp">＋ 서류 올리기</button></div></div>' +
+      '<div id="dAlert"></div>' +
+      '<div class="toolbar">' +
+      '<div class="segmented" id="dBiz">' + [''].concat(BIZ_LIST).concat(['공통']).map(function (b) { return '<button type="button" data-b="' + b + '" class="' + (ds.biz === b ? 'on' : '') + '">' + (b || '전체') + '</button>'; }).join('') + '</div>' +
+      '<select class="input input-sm" id="dCat" style="width:auto"><option value="">모든 분류</option></select>' +
+      '<input class="input input-sm" id="dQ" placeholder="서류명·파일명·메모 검색" value="' + esc(ds.q) + '" style="max-width:240px">' +
+      '<button class="btn btn-sm" id="dZip" style="margin-left:auto" disabled>선택 ZIP 다운로드</button>' +
+      '</div><div id="dList"></div></div>';
+    $$('#dBiz button').forEach(function (b) { b.onclick = function () { ds.biz = b.dataset.b; $$('#dBiz button').forEach(function (x) { x.classList.toggle('on', x === b); }); drawDocs(); }; });
+    $('#dCat').onchange = function () { ds.cat = this.value; drawDocs(); };
+    var st; $('#dQ').oninput = function () { var v = this.value; clearTimeout(st); st = setTimeout(function () { ds.q = v.trim(); drawDocs(); }, 200); };
+    $('#dReload').onclick = function () { ds.list = null; loadDocs(); };
+    $('#dUp').onclick = function () { openDocEdit(null); };
+    $('#dZip').onclick = function () { zipDocs(this); };
+    if (ds.list) drawDocs(); else loadDocs();
+  }
+
+  function loadDocs() {
+    var l = $('#dList'); if (l) l.innerHTML = '<p class="muted"><span class="spinner dark"></span> 불러오는 중…</p>';
+    return api('docs.list').then(function (r) {
+      state.docs.list = r.docs;
+      if (state.view === 'docs') drawDocs();
+    }).catch(function (err) { var x = $('#dList'); if (x) x.innerHTML = '<p style="color:var(--red)">' + esc(err.message) + '</p>' + (/드라이브|Drive|권한|permission/i.test(err.message) ? '<p class="hint">서버 구글 시트 메뉴 <b>조일ver1 → 서류함 준비 (드라이브 권한)</b>을 한 번 실행해야 합니다.</p>' : ''); });
+  }
+
+  function drawDocs() {
+    var ds = state.docs, list = $('#dList'); if (!list || !ds.list) return;
+    var cats = {}; ds.list.forEach(function (d) { cats[d.cat] = (cats[d.cat] || 0) + 1; });
+    var catSel = $('#dCat');
+    catSel.innerHTML = '<option value="">모든 분류</option>' + Object.keys(cats).sort().map(function (c) { return '<option value="' + esc(c) + '"' + (ds.cat === c ? ' selected' : '') + '>' + esc(c) + ' (' + cats[c] + ')</option>'; }).join('');
+    var q = ds.q;
+    var items = ds.list.filter(function (d) {
+      if (ds.biz === '공통' ? d.biz : (ds.biz && d.biz !== ds.biz)) return false;
+      if (ds.cat && d.cat !== ds.cat) return false;
+      return !q || (d.name + ' ' + d.fileName + ' ' + d.memo + ' ' + d.cat + ' ' + d.biz).indexOf(q) !== -1;
+    }).sort(function (a, b) { return (a.biz || '~').localeCompare(b.biz || '~') || a.cat.localeCompare(b.cat) || a.name.localeCompare(b.name); });
+    var soon = ds.list.filter(function (d) { var n = docDays(d); return n != null && n <= 30; });
+    $('#dAlert').innerHTML = soon.length ? '<div class="doc-alert"><b>만료 확인</b> ' + soon.map(function (d) { var n = docDays(d); return esc((d.biz ? d.biz + ' ' : '') + d.name) + ' <span class="badge ' + (n < 0 ? 'exp-x">만료됨' : 'exp-soon">D-' + n) + '</span>'; }).join(' · ') + '</div>' : '';
+    Object.keys(ds.sel).forEach(function (id) { if (!ds.list.some(function (d) { return d.id === id; })) delete ds.sel[id]; });
+    if (!items.length) {
+      list.innerHTML = '<p class="muted" style="margin:18px 0 4px">' + (ds.list.length ? '조건에 맞는 서류가 없습니다.' : '아직 올린 서류가 없어요. <b>＋ 서류 올리기</b>로 사업자등록증부터 넣어 보세요.') + '</p>';
+    } else {
+      list.innerHTML = '<div class="table-wrap"><table class="data docs"><thead><tr><th class="chk"><input type="checkbox" id="dAll" aria-label="모두 선택"></th><th class="left">서류</th><th class="left">사업자</th><th class="left">분류</th><th class="left">발급일</th><th class="left">만료일</th><th>크기</th><th class="left">올린 사람</th><th></th></tr></thead><tbody>' +
+        items.map(function (d) {
+          var k = docKind(d);
+          return '<tr data-id="' + esc(d.id) + '"><td class="chk"><input type="checkbox" data-sel' + (ds.sel[d.id] ? ' checked' : '') + '></td>' +
+            '<td class="left"><button class="doc-name" data-act="view"><span class="ficon f-' + k + '">' + DOC_ICON[k] + '</span><span><b>' + esc(d.name) + '</b><small>' + esc(d.fileName) + (d.memo ? ' · ' + esc(d.memo) : '') + '</small></span></button></td>' +
+            '<td class="left">' + (d.biz ? esc(d.biz) : '<span class="muted">공통</span>') + '</td><td class="left">' + esc(d.cat) + '</td>' +
+            '<td class="left small">' + esc(d.issued || '–') + '</td><td class="left">' + docBadge(d) + '</td>' +
+            '<td class="num small">' + fileSize(d.size) + '</td><td class="left small muted">' + esc(String(d.by).replace(/ \(.*\)$/, '')) + '<br>' + esc(String(d.at).slice(0, 10)) + '</td>' +
+            '<td class="doc-acts"><button class="btn btn-sm" data-act="dl">다운로드</button><button class="btn btn-sm btn-ghost" data-act="edit">수정</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+      var all = $('#dAll');
+      all.checked = items.every(function (d) { return ds.sel[d.id]; });
+      all.onchange = function () { var on = this.checked; items.forEach(function (d) { if (on) ds.sel[d.id] = true; else delete ds.sel[d.id]; }); drawDocs(); };
+      $$('tr[data-id]', list).forEach(function (tr) {
+        var d = ds.list.filter(function (x) { return x.id === tr.dataset.id; })[0];
+        $('[data-sel]', tr).onchange = function () { if (this.checked) ds.sel[d.id] = true; else delete ds.sel[d.id]; updZip(); };
+        $('[data-act="view"]', tr).onclick = function () { previewDoc(d); };
+        $('[data-act="dl"]', tr).onclick = function () { var b = this; busy(b, true, '…'); docBlob(d).then(function (bl) { saveBlob(bl, d.fileName); }).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(b, false); }); };
+        $('[data-act="edit"]', tr).onclick = function () { openDocEdit(d); };
+      });
+    }
+    updZip();
+    function updZip() { var n = Object.keys(ds.sel).length, z = $('#dZip'); if (z) { z.disabled = !n; z.textContent = n ? '선택 ' + n + '개 ZIP 다운로드' : '선택 ZIP 다운로드'; } }
+  }
+
+  /** 파일 내용 받기 (한 번 받은 건 이 화면에서 다시 안 받음) */
+  function docBlob(d) {
+    var cache = state.docs.blobs;
+    if (cache[d.id]) return Promise.resolve(cache[d.id]);
+    return api('docs.get', { id: d.id }).then(function (r) {
+      var bl = new Blob([bytesFromB64(r.data)], { type: d.mime || 'application/octet-stream' });
+      if (d.size < 8 * 1024 * 1024) cache[d.id] = bl;
+      return bl;
+    });
+  }
+
+  function previewDoc(d) {
+    var k = docKind(d), url = null;
+    var close = modal({
+      wide: true, eyebrow: (d.biz || '공통') + ' · ' + d.cat, title: d.name,
+      body: '<div class="doc-meta small muted">' + esc(d.fileName) + ' · ' + fileSize(d.size) + (d.issued ? ' · 발급 ' + esc(d.issued) : '') + (d.expires ? ' · 만료 ' + esc(d.expires) : '') + ' · ' + esc(d.by) + ' ' + esc(d.at) + (d.memo ? '<br>' + esc(d.memo) : '') + '</div>' +
+        '<div class="doc-view" id="dView"><p class="muted"><span class="spinner dark"></span> 불러오는 중…</p></div>',
+      foot: '<button class="btn btn-danger btn-sm" id="dDel" style="margin-right:auto">삭제</button><button class="btn" data-close>닫기</button><button class="btn btn-primary" id="dDl">다운로드</button>',
+      onMount: function (m, closeFn) {
+        var obs = new MutationObserver(function () { if (!document.body.contains(m)) { if (url) URL.revokeObjectURL(url); obs.disconnect(); } });
+        obs.observe(document.body, { childList: true });
+        docBlob(d).then(function (bl) {
+          var v = $('#dView', m); if (!v) return;
+          url = URL.createObjectURL(bl);
+          if (k === 'img') v.innerHTML = '<img src="' + url + '" alt="' + esc(d.name) + '">';
+          else if (k === 'pdf') v.innerHTML = '<iframe src="' + url + '" title="' + esc(d.name) + '"></iframe>';
+          else v.innerHTML = '<div class="empty" style="min-height:160px"><div><div class="ficon big f-' + k + '">' + DOC_ICON[k] + '</div><p class="muted">이 형식은 미리보기를 지원하지 않아요. 다운로드해서 여세요.</p></div></div>';
+        }).catch(function (err) { var v = $('#dView', m); if (v) v.innerHTML = '<p style="color:var(--red)">' + esc(err.message) + '</p>'; });
+        $('#dDl', m).onclick = function () { var b = this; busy(b, true, '…'); docBlob(d).then(function (bl) { saveBlob(bl, d.fileName); }).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(b, false); }); };
+        $('#dDel', m).onclick = function () {
+          if (!confirm('"' + d.name + '" 서류를 삭제할까요? 드라이브 휴지통으로 이동합니다.')) return;
+          var b = this; busy(b, true, '삭제 중…');
+          api('docs.delete', { id: d.id }).then(function () {
+            closeFn(); state.docs.list = state.docs.list.filter(function (x) { return x.id !== d.id; }); delete state.docs.sel[d.id];
+            toast('삭제했습니다.'); if (state.view === 'docs') drawDocs();
+          }).catch(function (err) { busy(b, false); toast(err.message, 'err'); });
+        };
+      }
+    });
+    return close;
+  }
+
+  function readFileB64(file) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result).split(',')[1] || ''); };
+      fr.onerror = function () { reject(new Error('파일을 읽을 수 없습니다.')); };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  /** 서류 올리기(d 없음) · 정보 수정(d 있음) */
+  function openDocEdit(d) {
+    var isNew = !d, v = d || { biz: state.docs.biz && state.docs.biz !== '공통' ? state.docs.biz : '', cat: state.docs.cat || '', name: '', issued: '', expires: '', memo: '' };
+    var file = null;
+    modal({
+      eyebrow: '서류함', title: isNew ? '서류 올리기' : '서류 정보 수정',
+      body:
+        (isNew ? '<label class="drop" id="dDrop"><input type="file" id="dFile" hidden><span id="dFileTxt"><b>파일 고르기</b> 또는 여기로 끌어다 놓기<br><span class="small muted">PDF · 이미지 · 엑셀 · 한글 등 20MB까지</span></span></label>' : '') +
+        '<div class="field"><label>서류명 <span style="color:var(--red)">*</span></label><input class="input" id="dName" maxlength="100" value="' + esc(v.name) + '" placeholder="예) 사업자등록증"></div>' +
+        '<div class="field"><label>사업자</label><div class="segmented" id="dBizSel">' + [''].concat(BIZ_LIST).map(function (b) { return '<button type="button" data-v="' + b + '" class="' + (v.biz === b ? 'on' : '') + '">' + (b || '공통') + '</button>'; }).join('') + '</div></div>' +
+        '<div class="field"><label>분류</label><input class="input" id="dCatIn" list="docCats" maxlength="30" value="' + esc(v.cat) + '" placeholder="골라도 되고 직접 써도 돼요"><datalist id="docCats">' + DOC_CATS.map(function (c) { return '<option value="' + esc(c) + '">'; }).join('') + '</datalist></div>' +
+        '<div class="qd-two"><div class="field"><label>발급일</label><input class="input" id="dIss" type="date" value="' + esc(v.issued) + '"></div>' +
+        '<div class="field"><label>만료일 <span class="muted">(있으면)</span></label><input class="input" id="dExp" type="date" value="' + esc(v.expires) + '"></div></div>' +
+        '<div class="field"><label>메모</label><input class="input" id="dMemo" maxlength="500" value="' + esc(v.memo) + '" placeholder="예) 2026년 갱신본, 원본 스캔"></div>' +
+        (isNew ? '' : '<p class="hint" style="margin:0">파일을 바꾸려면 이 서류를 지우고 새로 올리세요.</p>'),
+      foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="dSave">' + (isNew ? '올리기' : '저장') + '</button>',
+      onMount: function (m, close) {
+        $$('#dBizSel button', m).forEach(function (b) { b.onclick = function () { $$('#dBizSel button', m).forEach(function (x) { x.classList.toggle('on', x === b); }); }; });
+        if (!$('#dBizSel button.on', m)) $('#dBizSel button', m).classList.add('on');
+        if (isNew) {
+          var pick = function (f) {
+            if (!f) return;
+            if (f.size > DOC_MAX) { toast('파일은 20MB까지 올릴 수 있습니다.', 'err'); return; }
+            file = f;
+            $('#dFileTxt', m).innerHTML = '<b>' + esc(f.name) + '</b><br><span class="small muted">' + fileSize(f.size) + ' · 다른 파일을 고르려면 다시 누르세요</span>';
+            var nm = $('#dName', m); if (!nm.value.trim()) nm.value = f.name.replace(/\.[^.]+$/, '');
+            var ci = $('#dCatIn', m); if (!ci.value) { var g = DOC_CATS.filter(function (c) { return c !== '기타' && f.name.indexOf(c.replace(/ /g, '')) !== -1; })[0]; if (g) ci.value = g; }
+          };
+          $('#dFile', m).onchange = function () { pick(this.files[0]); };
+          var dz = $('#dDrop', m);
+          dz.ondragover = function (e) { e.preventDefault(); dz.classList.add('over'); };
+          dz.ondragleave = function () { dz.classList.remove('over'); };
+          dz.ondrop = function (e) { e.preventDefault(); dz.classList.remove('over'); pick(e.dataTransfer.files[0]); };
+        }
+        $('#dSave', m).onclick = function () {
+          var meta = { name: $('#dName', m).value.trim(), biz: $('#dBizSel button.on', m).dataset.v, cat: $('#dCatIn', m).value.trim() || '기타', issued: $('#dIss', m).value, expires: $('#dExp', m).value, memo: $('#dMemo', m).value.trim() };
+          if (isNew && !file) return toast('올릴 파일을 고르세요.', 'err');
+          if (!meta.name) return toast('서류명을 입력하세요.', 'err');
+          var btn = this; busy(btn, true, isNew ? '올리는 중…' : '저장 중…');
+          var p = isNew
+            ? readFileB64(file).then(function (b64) { return api('docs.upload', Object.assign({ fileName: file.name, mime: file.type || 'application/octet-stream', data: b64 }, meta)); })
+            : api('docs.update', { id: d.id, patch: meta });
+          p.then(function (r) {
+            close();
+            var ds = state.docs;
+            if (ds.list) { ds.list = ds.list.filter(function (x) { return x.id !== r.doc.id; }); ds.list.push(r.doc); }
+            toast(isNew ? '서류를 올렸습니다.' : '저장했습니다.');
+            if (state.view === 'docs') { if (ds.list) drawDocs(); else loadDocs(); }
+          }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+        };
+      }
+    });
+  }
+
+  function zipDocs(btn) {
+    var ids = Object.keys(state.docs.sel);
+    if (!ids.length) return;
+    if (ids.length > 50) return toast('한 번에 50개까지 묶을 수 있어요.', 'err');
+    busy(btn, true, '묶는 중…');
+    api('docs.zip', { ids: ids }).then(function (r) {
+      saveBlob(new Blob([bytesFromB64(r.data)], { type: 'application/zip' }), '서류_' + today() + '.zip');
+    }).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); var z = $('#dZip'); if (z) z.textContent = '선택 ' + ids.length + '개 ZIP 다운로드'; });
+  }
+
+  /* ───────── 견적 ↔ 실적 연결 (B1) ───────── */
+
+  function linkRows(link) {
+    var out = [];
+    state.an.rows.forEach(function (r) {
+      if (r[C.hidden] || r[C.cat]) return;
+      if (r[C.disp] !== link.cust) return;
+      if (link.from && r[C.from] !== link.from) return;
+      if (link.to && r[C.to] !== link.to) return;
+      if (link.weight && r[C.weight] !== link.weight) return;
+      if (link.since && r[C.date].slice(0, 7) < link.since) return;
+      out.push(r);
+    });
+    return out;
+  }
+
+  function drawQuoteLink(d, box) {
+    if (!box || !can('analysis')) return;
+    var q = d.quote, an = state.an, id = q.id;
+    if (!an.rows) {
+      box.innerHTML = '<div class="card muted"><span class="spinner dark"></span> 실적 비교용 분석 데이터를 불러오는 중…</div>';
+      loadAnalysis().then(function () { if (state.quotes.detail === id) drawQuoteLink(d, $('#qLink')); })
+        .catch(function (err) { box.innerHTML = '<div class="card"><p style="margin:0">' + esc(err.message) + '</p></div>'; });
+      return;
+    }
+    var l = q.link;
+    if (!l) {
+      box.innerHTML = '<div class="card qlink"><div class="row-between" style="flex-wrap:wrap;gap:10px"><div><div class="eyebrow">Actual · 실적 연결</div><h3>수주 후 실제 운송 실적과 비교</h3>' +
+        '<p class="muted small" style="margin:4px 0 0">매출처·경로를 연결하면 이 견적 단가와 실제 매출·매입·이익을 월별로 나란히 봅니다.</p></div>' +
+        '<button class="btn btn-sm btn-primary" id="qlSet">실적 연결하기</button></div></div>';
+      $('#qlSet').onclick = function () { openLinkPicker(d); };
+      return;
+    }
+    var rows = linkRows(l), byM = {};
+    rows.forEach(function (r) { var m = r[C.date].slice(0, 7), x = byM[m] || (byM[m] = { n: 0, s: 0, b: 0 }); x.n++; x.s += r[C.sales]; x.b += r[C.buys]; });
+    var months = Object.keys(byM).sort();
+    var t = agg(rows), avgS = t.n ? t.s / t.n : 0, avgB = t.n ? t.b / t.n : 0;
+    var gap = l.price && t.n ? (avgS - l.price) / l.price * 100 : null;
+    var desc = [l.from, l.to].filter(Boolean).join(' → ') + (l.weight ? ' · ' + l.weight : '');
+    box.innerHTML = '<div class="card qlink"><div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:12px"><div><div class="eyebrow">Actual · 실적 연결</div>' +
+      '<h3>' + esc(l.cust) + (desc ? ' <span class="muted small">' + esc(desc) + '</span>' : '') + '</h3>' +
+      '<p class="muted small" style="margin:4px 0 0">' + (l.since ? esc(l.since) + '부터' : '전체 기간') + ' · 운송 오더만 (제외·분류 항목 빼고)</p></div>' +
+      '<div class="actions"><button class="btn btn-sm" id="qlGo">분석에서 보기</button><button class="btn btn-sm" id="qlEdit">연결 바꾸기</button><button class="btn btn-sm btn-ghost" id="qlOff">연결 해제</button></div></div>' +
+      (t.n ? '<div class="kpis mini">' +
+        '<div class="kpi"><div class="k">실적 건수</div><div class="v num">' + won(t.n) + '건</div><div class="s">' + months.length + '개월</div></div>' +
+        '<div class="kpi"><div class="k">건당 평균 매출</div><div class="v num">' + won(Math.round(avgS)) + '원</div><div class="s">' + (l.price ? '견적 ' + won(l.price) + '원 ' + deltaHtml(gap, '%', true) + (l.ton ? ' <span class="muted">(' + esc(l.ton) + ')</span>' : '') : '견적 단가 미입력') + '</div></div>' +
+        '<div class="kpi"><div class="k">건당 평균 매입</div><div class="v num">' + won(Math.round(avgB)) + '원</div><div class="s">' + (l.price ? '견적 대비 매입 ' + pctText(avgB / l.price * 100) : '') + '</div></div>' +
+        '<div class="kpi"><div class="k">이익 · 이익률</div><div class="v num' + (t.p < 0 ? ' neg' : '') + '">' + won(t.p) + '원</div><div class="s">' + pctText(t.r) + '</div></div></div>' +
+        '<div class="table-wrap" style="margin-top:12px"><table class="data grp mini"><thead><tr><th class="left">월</th><th>건수</th><th>매출</th><th>매입</th><th>이익</th><th>이익률</th><th>건당 매출</th>' + (l.price ? '<th>견적 대비</th>' : '') + '</tr></thead><tbody>' +
+        months.slice().reverse().map(function (m) {
+          var x = byM[m], p = x.s - x.b, a = x.s / x.n;
+          return '<tr><td class="left">' + m + '</td><td class="num">' + won(x.n) + '</td><td class="num">' + won(x.s) + '</td><td class="num">' + won(x.b) + '</td><td class="num' + (p < 0 ? ' neg' : '') + '">' + won(p) + '</td><td class="num">' + pctText(pct(p, x.s)) + '</td><td class="num">' + won(Math.round(a)) + '</td>' +
+            (l.price ? '<td class="num">' + deltaHtml((a - l.price) / l.price * 100, '%', true) + '</td>' : '') + '</tr>';
+        }).join('') + '</tbody></table></div>'
+        : '<p class="muted" style="margin:0">조건에 맞는 실적이 아직 없어요. 다음 달 데이터를 올리면 자동으로 나타납니다.</p>') + '</div>';
+    $('#qlEdit').onclick = function () { openLinkPicker(d); };
+    $('#qlOff').onclick = function () {
+      if (!confirm('실적 연결을 해제할까요?')) return;
+      var b = this; busy(b, true, '…');
+      api('quotes.update', { id: q.id, patch: { link: null } }).then(function (r) { d.quote = r.quote; state.quotes.list = null; drawQuoteLink(d, $('#qLink')); })
+        .catch(function (err) { busy(b, false); toast(err.message, 'err'); });
+    };
+    $('#qlGo').onclick = function () {
+      var f = an.f, ms = anMonths();
+      f.sel = { cust: [l.cust] };
+      if (l.from) f.sel.from = [l.from];
+      if (l.to) f.sel.to = [l.to];
+      if (l.weight) f.sel.weight = [l.weight];
+      f.to = ms[ms.length - 1] || f.to; f.from = l.since && ms.indexOf(l.since) !== -1 ? l.since : (ms.filter(function (m) { return m >= (l.since || ''); })[0] || f.to);
+      an.dim = 'month';
+      state.view = 'analysis'; render();
+    };
+  }
+
+  function openLinkPicker(d) {
+    var q = d.quote, an = state.an, l = q.link || {};
+    var custs = {};
+    an.rows.forEach(function (r) { if (!r[C.hidden] && !r[C.cat]) custs[r[C.disp]] = (custs[r[C.disp]] || 0) + r[C.sales]; });
+    var custList = Object.keys(custs).sort(function (a, b) { return custs[b] - custs[a]; });
+    var it = d.items && d.items[0] && d.items[0].result;
+    var tons = (d.meta.tons || state.pub.tons);
+    var priceFor = function (t) { if (!it || d.meta.type !== '단건') return ''; var x = it.rows.filter(function (y) { return y.ton === t; })[0]; return x ? x.total : ''; };
+    var guess = l.cust || (custList.filter(function (c) { return q.client && (c.indexOf(q.client) !== -1 || q.client.indexOf(c) !== -1); })[0] || '');
+    modal({
+      eyebrow: '실적 연결', title: q.name,
+      body:
+        '<div class="field"><label>매출처 <span style="color:var(--red)">*</span> <span class="muted">(분석의 표시 이름)</span></label><input class="input" id="lkCust" list="lkCusts" value="' + esc(guess) + '" placeholder="이름 일부를 입력하면 골라져요"><datalist id="lkCusts">' + custList.slice(0, 3000).map(function (c) { return '<option value="' + esc(c) + '">'; }).join('') + '</datalist></div>' +
+        '<div class="qd-two"><div class="field"><label>발지</label><select class="input" id="lkFrom"></select></div><div class="field"><label>착지</label><select class="input" id="lkTo"></select></div></div>' +
+        '<div class="qd-two"><div class="field"><label>중량</label><select class="input" id="lkW"></select></div><div class="field"><label>언제부터 (수주 시작 월)</label><select class="input" id="lkSince"><option value="">전체 기간</option>' + anMonths().slice().reverse().map(function (m) { return '<option' + (l.since === m ? ' selected' : '') + '>' + m + '</option>'; }).join('') + '</select></div></div>' +
+        '<div class="qd-two"><div class="field"><label>비교할 톤수</label><select class="input" id="lkTon"><option value="">직접 입력</option>' + tons.map(function (t) { return '<option' + (l.ton === t ? ' selected' : '') + '>' + esc(t) + '</option>'; }).join('') + '</select></div>' +
+        '<div class="field"><label>견적 단가 (건당, 원)</label><input class="input" id="lkPrice" inputmode="numeric" value="' + esc(l.price ? won(l.price) : '') + '" placeholder="예) 450,000"></div></div>' +
+        '<p class="hint" id="lkCount" style="margin:0"></p>',
+      foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="lkSave">연결</button>',
+      onMount: function (m, close) {
+        var cur = { from: l.from || '', to: l.to || '', weight: l.weight || '' };
+        function opts(sel, key, list) {
+          var el = $(sel, m), counts = {};
+          list.forEach(function (r) { counts[r[key]] = (counts[r[key]] || 0) + 1; });
+          var names = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+          el.innerHTML = '<option value="">전체</option>' + names.map(function (n) { return '<option value="' + esc(n) + '">' + esc(n || '(빈칸)') + ' · ' + counts[n] + '건</option>'; }).join('');
+          return el;
+        }
+        function refresh() {
+          var c = $('#lkCust', m).value.trim();
+          var base = custs[c] ? an.rows.filter(function (r) { return !r[C.hidden] && !r[C.cat] && r[C.disp] === c; }) : [];
+          var f1 = opts('#lkFrom', C.from, base); if (!base.some(function (r) { return r[C.from] === cur.from; })) cur.from = ''; f1.value = cur.from;
+          var b2 = base.filter(function (r) { return !cur.from || r[C.from] === cur.from; });
+          var f2 = opts('#lkTo', C.to, b2); if (!b2.some(function (r) { return r[C.to] === cur.to; })) cur.to = ''; f2.value = cur.to;
+          var b3 = b2.filter(function (r) { return !cur.to || r[C.to] === cur.to; });
+          var f3 = opts('#lkW', C.weight, b3); if (!b3.some(function (r) { return r[C.weight] === cur.weight; })) cur.weight = ''; f3.value = cur.weight;
+          var n = linkRows({ cust: c, from: cur.from, to: cur.to, weight: cur.weight, since: $('#lkSince', m).value }).length;
+          $('#lkCount', m).innerHTML = !c ? '매출처를 고르세요.' : !custs[c] ? '<span style="color:var(--red)">분석 데이터에 없는 매출처입니다.</span>' : '조건에 맞는 실적 <b>' + won(n) + '건</b>';
+        }
+        $('#lkCust', m).oninput = refresh;
+        $('#lkFrom', m).onchange = function () { cur.from = this.value; refresh(); };
+        $('#lkTo', m).onchange = function () { cur.to = this.value; refresh(); };
+        $('#lkW', m).onchange = function () { cur.weight = this.value; refresh(); };
+        $('#lkSince', m).onchange = refresh;
+        $('#lkTon', m).onchange = function () { var p = priceFor(this.value); if (p) $('#lkPrice', m).value = won(p); };
+        $('#lkPrice', m).oninput = function () { var n = this.value.replace(/[^\d]/g, ''); this.value = n ? won(Number(n)) : ''; };
+        refresh();
+        $('#lkSave', m).onclick = function () {
+          var c = $('#lkCust', m).value.trim();
+          if (!custs[c]) return toast('분석 데이터에 있는 매출처를 고르세요.', 'err');
+          var link = { cust: c, from: cur.from, to: cur.to, weight: cur.weight, since: $('#lkSince', m).value, ton: $('#lkTon', m).value, price: Number($('#lkPrice', m).value.replace(/[^\d]/g, '')) || 0 };
+          var btn = this; busy(btn, true, '저장 중…');
+          api('quotes.update', { id: q.id, patch: { link: link } }).then(function (r) {
+            close(); d.quote = r.quote; state.quotes.list = null; toast('실적을 연결했습니다.'); drawQuoteLink(d, $('#qLink'));
+          }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+        };
+      }
+    });
   }
 
   /* ───────── 시작 ───────── */

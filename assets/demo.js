@@ -27,7 +27,8 @@
     snaps: {},
     quotes: []
   };
-  store.snaps = store.snaps || {}; store.quotes = store.quotes || [];
+  store.snaps = store.snaps || {}; store.quotes = store.quotes || []; store.companies = store.companies || {};
+  var docs = [], docData = {}; // 서류함: 메모리에만 (새로고침하면 사라짐)
   store.settings = joilMergeSettings(store.settings);
   var sessions = loadSessions();
   var anData = {}, anIndex = [], anMap = [], anLog = [], anRules = [];
@@ -48,6 +49,10 @@
   function today() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); }
   function pad(n) { return ('0' + n).slice(-2); }
   function fail(msg) { throw new Error(msg); }
+  function docMeta(m) {
+    var name = String(m.name || '').trim(); if (!name) fail('서류명을 입력하세요.');
+    return { name: name, biz: String(m.biz || ''), cat: String(m.cat || '기타'), issued: String(m.issued || ''), expires: String(m.expires || ''), memo: String(m.memo || '') };
+  }
   function temp() { return 'demo' + Math.random().toString(36).slice(2, 8) + '7'; }
 
   function geocode(q) {
@@ -137,7 +142,8 @@
     var me = session(req.token);
     var s = store.settings;
     if (me.mustChange && ['me', 'logout', 'changePassword', 'publicSettings'].indexOf(req.action) === -1) fail('임시 비밀번호입니다. 비밀번호를 먼저 변경하세요.');
-    if (['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete'].indexOf(req.action) !== -1) needPerm(me, 'quote');
+    if (['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete',
+      'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies'].indexOf(req.action) !== -1) needPerm(me, 'quote');
     if (req.action === 'analysis.index' || req.action === 'analysis.load') needPerm(me, 'analysis');
     switch (req.action) {
       case 'analysis.index':
@@ -206,8 +212,37 @@
         return { quote: publicQuote(gq), meta: gq.data.meta, items: gq.data.items };
       case 'quotes.update':
         var uq = quoteOf(me, req.id), uf = quoteFields(Object.assign({}, uq, req.patch || {}));
+        if (req.patch && req.patch.hasOwnProperty('link')) {
+          if (req.patch.link && !req.patch.link.cust) fail('연결할 매출처를 고르세요.');
+          uq.link = req.patch.link || null;
+        }
         uq.name = uf.name; uq.client = uf.client; uq.memo = uf.memo; uq.status = uf.status; uq.updatedAt = today(); save();
         return { quote: publicQuote(uq) };
+      case 'docs.list': return { docs: docs.slice() };
+      case 'docs.upload':
+        var dm = docMeta(req);
+        if (!req.data) fail('파일이 비어 있습니다.');
+        var did = 'D' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+        docData[did] = req.data;
+        var nd = Object.assign({ id: did, fileName: String(req.fileName || dm.name), mime: req.mime || 'application/octet-stream', size: Math.round(req.data.length * 3 / 4), by: me.name + ' (' + me.id + ')', at: today(), updated: today() }, dm);
+        docs.push(nd); return { doc: nd };
+      case 'docs.update':
+        var ud = docs.filter(function (x) { return x.id === req.id; })[0]; if (!ud) fail('서류를 찾을 수 없습니다.');
+        Object.assign(ud, docMeta(Object.assign({}, ud, req.patch || {})), { updated: today() }); return { doc: ud };
+      case 'docs.get':
+        var gd = docs.filter(function (x) { return x.id === req.id; })[0]; if (!gd) fail('서류를 찾을 수 없습니다.');
+        return { doc: gd, data: docData[gd.id] };
+      case 'docs.zip': fail('데모 모드에서는 ZIP 묶음을 만들 수 없어요. (실제 서버에서는 됩니다)');
+      case 'docs.delete': docs = docs.filter(function (x) { return x.id !== req.id; }); delete docData[req.id]; return {};
+      case 'addr.list':
+        var seenA = {}, al = [];
+        store.logs.slice().reverse().forEach(function (l) { [l.from, l.to].forEach(function (a) { if (a && !/^하차지 \d+곳$/.test(a) && !seenA[a]) { seenA[a] = true; al.push([a, '']); } }); });
+        CITIES.forEach(function (c) { if (!seenA[c[0]]) al.push([c[0], c[1]]); });
+        return { list: al };
+      case 'companies':
+        var co = JSON.parse(JSON.stringify(store.companies));
+        ['조일물류', '명일로지스', '조일로지스'].forEach(function (b) { co[b] = co[b] || {}; });
+        return { companies: co };
       case 'quotes.delete':
         var dq = quoteOf(me, req.id);
         store.quotes = store.quotes.filter(function (q) { return q !== dq; }); save();
@@ -246,6 +281,14 @@
         diesel = Object.keys(byD).sort().map(function (k) { return byD[k]; });
         return { count: (req.rows || []).length, status: dieselStatus() };
       case 'analysis.accessLog': return { logs: anLog.slice(0, 50) };
+      case 'admin.saveCompanies':
+        var nc = {};
+        ['조일물류', '명일로지스', '조일로지스'].forEach(function (b) {
+          var c = (req.companies || {})[b] || {}; nc[b] = {};
+          ['name', 'ceo', 'bizNo', 'addr', 'tel', 'fax', 'email', 'manager', 'bank', 'stamp'].forEach(function (k) { nc[b][k] = String(c[k] || ''); });
+          if (nc[b].stamp && !/^data:image\/(png|jpeg|webp);base64,/.test(nc[b].stamp)) fail(b + ' 직인 이미지 형식이 맞지 않습니다.');
+        });
+        store.companies = nc; save(); return { companies: JSON.parse(JSON.stringify(nc)) };
       case 'admin.createUser':
         var id = String(req.id || '').trim();
         if (!/^[A-Za-z0-9_.-]{3,30}$/.test(id)) fail('아이디는 영문/숫자 3~30자로 입력하세요.');
