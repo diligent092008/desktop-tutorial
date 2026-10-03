@@ -1294,6 +1294,15 @@
     return new Response(stream).text();
   }
 
+  /** 구글 시트가 "2026-05"를 날짜로 바꿔 버리므로, 월·사업자는 항상 키("사업자|YYYY-MM")에서 꺼냄 */
+  function normAnIndex(list) {
+    return (list || []).map(function (x) {
+      var parts = String(x.key).split('|');
+      x.biz = parts[0]; x.month = parts[1];
+      return x;
+    }).filter(function (x) { return /^\d{4}-\d{2}$/.test(x.month); });
+  }
+
   function anDisplay(raw) {
     var m = state.an.mapping[raw];
     return m && m.display ? m.display : raw;
@@ -1315,7 +1324,7 @@
     if (an.rows && !force) return Promise.resolve();
     an.error = null;
     an.loading = api('analysis.index').then(function (r) {
-      an.index = r.index; an.businesses = r.businesses || ['조일물류', '명일로지스', '조일로지스'];
+      an.index = normAnIndex(r.index); an.businesses = r.businesses || ['조일물류', '명일로지스', '조일로지스'];
       an.mapping = {};
       (r.mapping || []).forEach(function (m) { an.mapping[m.raw] = m; });
       var keys = an.index.map(function (x) { return x.key; });
@@ -1540,7 +1549,7 @@
 
     function loadIndex() {
       api('analysis.index').then(function (r) {
-        state.an.index = r.index; state.an.businesses = r.businesses;
+        state.an.index = normAnIndex(r.index); state.an.businesses = r.businesses;
         state.an.mapping = {}; (r.mapping || []).forEach(function (m) { state.an.mapping[m.raw] = m; });
         drawIndex(); drawFiles();
       }).catch(function (err) { var x = $('#anIdx'); if (x) x.innerHTML = '<p class="err-text">' + esc(err.message) + '</p>'; });

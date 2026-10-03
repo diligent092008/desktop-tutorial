@@ -652,7 +652,7 @@ function quoteRowToObj_(r) {
   return {
     id: String(r[0]), savedAt: fmt_(r[1]), userId: String(r[2]), userName: String(r[3]), name: String(r[4]), client: String(r[5]),
     memo: String(r[6]), status: String(r[7]), type: String(r[8]), count: r[9], from: String(r[10]), to: String(r[11]),
-    recordId: String(r[12]), queriedAt: String(r[13]), updatedAt: fmt_(r[14])
+    recordId: String(r[12]), queriedAt: fmt_(r[13]), updatedAt: fmt_(r[14])
   };
 }
 
@@ -1024,7 +1024,8 @@ function anKey_(biz, month) { return biz + '|' + month; }
 function analysisIndex_(session) {
   var idx = cacheSheet_(SHEET_AN_INDEX, AN_INDEX_HEADER);
   var list = idx.getLastRow() < 2 ? [] : idx.getRange(2, 1, idx.getLastRow() - 1, AN_INDEX_HEADER.length).getValues().map(function (r) {
-    return { key: String(r[0]), biz: String(r[1]), month: String(r[2]), count: Number(r[3]), sales: Number(r[4]), buys: Number(r[5]), fileName: String(r[6]), uploadedAt: fmt_(r[7]), uploader: String(r[8]) };
+    var kp = String(r[0]).split('|'); // 시트가 월을 날짜로 바꾸므로 키에서 꺼냄
+    return { key: String(r[0]), biz: kp[0], month: kp[1], count: Number(r[3]), sales: Number(r[4]), buys: Number(r[5]), fileName: String(r[6]), uploadedAt: fmt_(r[7]), uploader: String(r[8]) };
   });
   var map = cacheSheet_(SHEET_AN_MAP, AN_MAP_HEADER);
   var mapping = map.getLastRow() < 2 ? [] : map.getRange(2, 1, map.getLastRow() - 1, 3).getValues().map(function (r) {
@@ -1084,7 +1085,7 @@ function analysisUpload_(session, req) {
     var parts = [];
     for (var i = 0; i < data.length; i += CELL_LIMIT) parts.push([key, parts.length + 1, data.slice(i, i + CELL_LIMIT)]);
     sh.getRange(sh.getLastRow() + 1, 1, parts.length, 3).setValues(parts);
-    cacheSheet_(SHEET_AN_INDEX, AN_INDEX_HEADER).appendRow([key, biz, month, rows.length, sales, buys, String(req.fileName || '').slice(0, 200), now_(), session.name + ' (' + session.id + ')']);
+    cacheSheet_(SHEET_AN_INDEX, AN_INDEX_HEADER).appendRow([key, biz, "'" + month, rows.length, sales, buys, String(req.fileName || '').slice(0, 200), now_(), session.name + ' (' + session.id + ')']);
   } finally {
     lock.releaseLock();
   }
