@@ -1,5 +1,5 @@
 /**
- * 조일ver1 — 서버 (구글 Apps Script)
+ * JOIL 조일그룹 견적·실적 시스템 — 서버 (구글 Apps Script)
  *
  * 설치 방법은 저장소의 SETUP.md 를 보세요.
  * 이 코드는 대리님 구글 계정에서 실행되며, 단가표·계정·API 키는
@@ -30,7 +30,7 @@ function requirePerm_(session, perm) {
 /* ───────────── 메뉴 & 초기 설정 ───────────── */
 
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('조일ver1')
+  SpreadsheetApp.getUi().createMenu('조일그룹 시스템')
     .addItem('초기 설정 (처음 한 번)', 'setup')
     .addItem('관리자 비밀번호 초기화', 'resetAdminPassword')
     .addItem('유가 자동 기록 켜기', 'installDieselTrigger')
@@ -89,7 +89,7 @@ function notify_(msg) {
 /* ───────────── 웹 요청 처리 ───────────── */
 
 function doGet() {
-  return ContentService.createTextOutput('조일ver1 서버가 정상 작동 중입니다.');
+  return ContentService.createTextOutput('조일그룹 견적·실적 시스템 서버가 정상 작동 중입니다.');
 }
 
 function doPost(e) {
@@ -353,7 +353,8 @@ function publicSettings_() {
     maxRows: s.batch.maxRows,
     retentionDays: s.snapshot.retentionDays,
     quoteFooter: s.quoteFooter,
-    maxKm: s.maxKm
+    maxKm: s.maxKm,
+    priceRounding: s.priceRounding
   };
 }
 
@@ -1195,9 +1196,9 @@ function analysisAccessLog_(limit) {
 
 /* ───────────── 서류함 (구글 드라이브) ───────────── */
 /*
- * 파일은 대리님 드라이브의 비공개 폴더 "조일ver1 서류함"에, 목록(이름·분류·유효기간 등)은 서류목록 시트에 둡니다.
+ * 파일은 대리님 드라이브의 비공개 폴더 "조일그룹 서류함"에, 목록(이름·분류·유효기간 등)은 서류목록 시트에 둡니다.
  * 보기·다운로드·올리기·삭제: 견적 권한자 (누가 올리고 지웠는지 기록)
- * 처음 한 번: 시트 메뉴 조일ver1 → 서류함 준비 (드라이브 권한 승인)
+ * 처음 한 번: 시트 메뉴 조일그룹 시스템 → 서류함 준비 (드라이브 권한 승인)
  */
 
 var SHEET_DOCS = '서류목록';
@@ -1208,7 +1209,7 @@ function docsFolder_() {
   var props = PropertiesService.getScriptProperties();
   var id = props.getProperty('DOCS_FOLDER');
   if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* 지워졌으면 새로 */ } }
-  var folder = DriveApp.createFolder('조일ver1 서류함');
+  var folder = DriveApp.createFolder('조일그룹 서류함');
   props.setProperty('DOCS_FOLDER', folder.getId());
   return folder;
 }
@@ -1354,7 +1355,7 @@ function addrList_() {
  * 하루 한 번(아침 7시) 오피넷 "최근 7일 전국 평균 경유가"를 받아 유가기록 시트에 쌓습니다.
  * 빠진 날이 있어도 7일치를 받으니 자동으로 메워지고, 견적 계산은 이 기록을 씁니다 (계산할 때마다 오피넷을 부르지 않음).
  *  유가기록: 날짜(텍스트) | 경유(원/L) | 출처 | 기록시각
- * 처음 한 번: Apps Script 편집기에서 installDieselTrigger 실행 (또는 시트 메뉴 조일ver1 → 유가 자동 기록 켜기)
+ * 처음 한 번: Apps Script 편집기에서 installDieselTrigger 실행 (또는 시트 메뉴 조일그룹 시스템 → 유가 자동 기록 켜기)
  */
 
 var SHEET_DIESEL = '유가기록';

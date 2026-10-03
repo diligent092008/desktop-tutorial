@@ -670,3 +670,15 @@ table.data.docs th.chk, table.data.docs td.chk { width: 34px; text-align: center
   .kpi .v, .kpis.mini .kpi .v { font-size: 18px; white-space: nowrap; }
   .kpi .v .small { font-size: 12px; }
 }
+
+/* ── 브랜드 (JOIL) ── */
+.brand-txt { display: flex; flex-direction: column; line-height: 1.05; }
+.brand-txt b { font-family: var(--font-display); font-size: 22px; font-weight: 800; letter-spacing: .02em; }
+.brand-txt small { font-family: var(--font); font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: -0.01em; margin-top: 2px; white-space: nowrap; }
+.brand-big h1 { letter-spacing: .03em; }
+table.data.qrow th, table.data.qrow td { text-align: right; white-space: nowrap; }
+table.data.qrow td.total .num { font-size: 16px; }
+.nav { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.nav button { white-space: nowrap; padding: 8px 13px; }
+.user-chip, .user-chip .btn, .user-chip .badge { white-space: nowrap; }
+@media (max-width: 1480px) { .user-chip .name { display: none; } }

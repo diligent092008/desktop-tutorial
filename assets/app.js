@@ -1,4 +1,4 @@
-/* 조일ver1 — 화면 로직 */
+/* JOIL 조일그룹 견적·실적 시스템 — 화면 로직 */
 (function () {
   'use strict';
 
@@ -261,7 +261,7 @@
     if (!state.pub) { app.innerHTML = '<div class="login-wrap"><div class="muted">불러오는 중…</div></div>'; return; }
     app.innerHTML =
       '<header class="topbar"><div class="stripe-bar"></div><div class="row">' +
-      '<div class="brand"><span class="logo"></span>조일ver1</div>' +
+      '<div class="brand"><span class="logo"></span><span class="brand-txt"><b>JOIL</b><small>조일그룹 견적·실적 시스템</small></span></div>' +
       '<nav class="nav">' +
       navItems().map(function (n) { return '<button data-view="' + n[0] + '" class="' + (state.view === n[0] ? 'on' : '') + '">' + n[1] + '</button>'; }).join('') +
       '</nav><div class="spacer"></div>' +
@@ -316,7 +316,7 @@
   function renderLogin() {
     app.innerHTML =
       '<div class="login-wrap"><div class="card login-card"><div class="stripe-bar"></div><div class="inner">' +
-      '<div class="brand-big"><span class="logo"></span><div><h1>조일ver1</h1><p>운임 견적 계산기</p></div></div>' +
+      '<div class="brand-big"><span class="logo"></span><div><h1>JOIL</h1><p>조일그룹 견적·실적 시스템</p></div></div>' +
       (DEMO ? '<div class="demo-banner"><b>데모 모드</b><span>서버가 연결되지 않아 임의 단가로 동작합니다.<br>아이디 <b>admin</b> / 비밀번호 <b>demo1234</b></span></div>' : '') +
       '<form id="loginForm">' +
       '<div class="field"><label for="lid">아이디</label><input class="input" id="lid" autocomplete="username" required></div>' +
@@ -582,17 +582,16 @@
         '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><div><div class="eyebrow">Quote · 톤수별 견적</div><h3>' + rows.length + '개 톤수</h3></div>' +
         '<div class="actions">' + (opts.recordId ? '<button class="btn btn-sm btn-primary" data-act="saveQuote">견적으로 저장</button>' : '') +
         '<button class="btn btn-sm" data-act="qdoc">견적서</button><button class="btn btn-sm" data-act="copy">회신 문구 복사</button><button class="btn btn-sm" data-act="xlsx">엑셀 저장</button></div></div>' +
-        (rows.length ? '<div class="table-wrap"><table class="data"><thead><tr>' +
-          '<th>톤수</th><th>타리프</th><th>지역할증</th><th>하행할증</th><th>합계</th>' +
-          '</tr></thead><tbody>' + rows.map(function (row, i) {
-            return '<tr style="--i:' + i + '"><td class="ton">' + esc(row.ton) + '</td>' +
-              '<td class="num">' + won(row.tariff) + '</td>' +
-              '<td class="num">' + won(row.region) + '</td>' +
-              '<td class="num">' + won(row.downhill) + '</td>' +
-              '<td class="total"><span class="num" data-total="' + row.total + '">' + won(row.total) + '</span></td></tr>';
-          }).join('') + '</tbody></table></div>'
+        (rows.length ? '<div class="table-wrap"><table class="data qrow"><thead><tr>' +
+          '<th>거리</th><th>지역할증</th><th>하행</th>' + rows.map(function (row) { return '<th>' + esc(row.ton) + '</th>'; }).join('') +
+          '</tr></thead><tbody><tr>' +
+          '<td class="num">' + r.distanceKm + '<span class="muted small">km</span></td>' +
+          '<td class="num" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
+          '<td class="num">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
+          rows.map(function (row) { return '<td class="total"><span class="num" data-total="' + row.total + '">' + won(row.total) + '</span></td>'; }).join('') +
+          '</tr></tbody></table></div>'
           : '<p class="muted" style="margin:0">선택된 톤수가 없습니다. ' + esc(opts.emptyHint || '') + '</p>') +
-        '<p class="hint" style="margin:14px 0 0">합계 = 타리프 + 지역할증 + 하행할증 (금액 단위 반올림 적용) · 유류비·통행료는 아래 밀크런에 따로 표시</p>' +
+        '<p class="hint" style="margin:14px 0 0">톤수별 금액 = 기본타리프 + 기본타리프 × 하행 + 지역할증 (금액 단위 반올림) · 유류비·통행료는 아래 밀크런에 따로 표시 · 엑셀에는 계산식이 들어갑니다</p>' +
         '</div>';
     }
     html += '<div style="margin-top:16px">' + milkrunCard(r, 2) + '</div>';
@@ -611,18 +610,10 @@
       copyText(quoteText(r, rows)).then(function () { toast('회신 문구를 복사했습니다.'); });
     };
     if (xBtn) xBtn.onclick = function () {
-      var m = r.milkrun;
-      var head = ['상차지', '하차지', '거리(km)', '요금기준(km)', '방향', '지역할증 내역', '톤수', '타리프', '지역할증', '하행할증', '합계'];
-      var body = rows.map(function (row) {
-        return [r.origin.address, r.dest.address, r.distanceKm, r.km, r.direction, regionText(r), row.ton, row.tariff, row.region, row.downhill, row.total];
+      exportResultsXlsx(xBtn, [{ no: 1, status: 'ok', result: r }], {
+        tons: rows.map(function (x) { return x.ton; }), title: '운임 견적 · ' + r.origin.address + ' → ' + r.dest.address,
+        fileName: 'JOIL_견적_' + (opts.fileDate || today()) + '.xlsx', meta: { baseTon: r.milkrun.ton, diesel: { price: r.milkrun.dieselPrice, source: r.dieselSource || '' } }, roundTrip: r.milkrun.roundTrip
       });
-      var mr = [['밀크런 기준 톤수', m.ton], ['편도/왕복', m.roundTrip ? '왕복' : '편도'], ['운행 거리(km)', m.distanceKm], ['연비(km/L)', m.kmPerL],
-        ['경유가(원/L)', m.dieselPrice], ['유류비', m.fuel], ['통행료(' + m.tollClass + '종)', m.toll], ['유류비+통행료', m.total]];
-      busy(xBtn, true, '만드는 중…');
-      downloadXlsx('조일ver1_견적_' + (opts.fileDate || today()) + '.xlsx', [
-        { name: '톤수별 견적', rows: [head].concat(body), widths: [34, 34, 9, 10, 6, 26, 7, 11, 10, 10, 11] },
-        { name: '밀크런', rows: [['항목', '값']].concat(mr), widths: [18, 14] }
-      ]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(xBtn, false); });
     };
   }
 
@@ -857,22 +848,19 @@
     var fail = all.length - okRows.length;
     var avg = okRows.length ? Math.round(okRows.reduce(function (s, r) { return s + r.result.distanceKm; }, 0) / okRows.length) : 0;
     var tons = opts.tons;
-    var detail = b.detail !== false;
     var list = bulkView(b);
     var pages = Math.max(1, Math.ceil(list.length / BULK_PAGE));
     if (b.page >= pages) b.page = 0;
     var pageRows = list.slice(b.page * BULK_PAGE, (b.page + 1) * BULK_PAGE);
     var meta = b.meta || {};
     var mrTon = meta.baseTon || '';
-    var perTon = detail ? 3 : 1;
 
     var head1 = '<tr><th class="sticky c0" rowspan="2">#</th><th class="sticky c1" rowspan="2">하차지</th><th rowspan="2" class="left">상차지</th>' +
-      '<th rowspan="2">거리</th><th rowspan="2" class="left">방향</th><th rowspan="2" class="left">지역할증</th>' +
+      '<th rowspan="2">거리</th><th rowspan="2">지역할증</th><th rowspan="2">하행</th>' +
       '<th colspan="3" class="grp mr">밀크런 · ' + esc(mrTon) + ' ' + (opts.roundTrip ? '왕복' : '편도') + '</th>' +
-      tons.map(function (t) { return '<th colspan="' + perTon + '" class="grp">' + esc(t) + '</th>'; }).join('') + '</tr>';
-    var head2 = '<tr><th class="mr">유류비</th><th class="mr">통행료</th><th class="mr">합계</th>' +
-      tons.map(function () { return detail ? '<th>타리프</th><th>하행</th><th>합계</th>' : '<th>합계</th>'; }).join('') + '</tr>';
-    var colCount = 9 + tons.length * perTon;
+      tons.map(function (t) { return '<th rowspan="2" class="grp">' + esc(t) + '</th>'; }).join('') + '</tr>';
+    var head2 = '<tr><th class="mr">유류비</th><th class="mr">통행료</th><th class="mr">합계</th></tr>';
+    var colCount = 9 + tons.length;
 
     var body = pageRows.map(function (row) {
       var start = '<td class="sticky c0 muted num">' + row.no + '</td>';
@@ -888,16 +876,14 @@
         '<td class="sticky c1"><div class="addr">' + esc(r.dest.address) + '</div>' + (r.dest.address !== row.dest ? '<div class="addr-in">' + esc(row.dest) + '</div>' : '') + '</td>' +
         '<td class="left"><div class="addr">' + esc(r.origin.address) + '</div></td>' +
         '<td class="num">' + r.distanceKm + '<span class="muted small">km</span></td>' +
-        '<td class="left">' + (r.direction === '하행' ? '<span class="badge down">▼ 하행' + (r.downhillApplied ? ' ' + r.downhillPercent + '%' : '') + '</span>' : '<span class="badge up">▲ 상행</span>') + '</td>' +
-        '<td class="left small">' + (r.regionHits.length ? r.regionHits.map(function (h) { return '<span class="badge region">' + esc(h.point.replace('지', '')) + '·' + esc(h.name) + ' ' + won(h.amount) + '</span>'; }).join('') : '<span class="muted">–</span>') + '</td>' +
+        '<td class="num" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
+        '<td class="num">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
         '<td class="num mr">' + won(m.fuel) + '</td><td class="num mr">' + won(m.toll) + '</td><td class="num mr strong">' + won(m.total) + '</td>' +
         tons.map(function (t) {
           var x = byTon[t];
-          if (r.overMax) return '<td colspan="' + perTon + '" class="muted small">별도 문의</td>';
-          if (!x) return '<td colspan="' + perTon + '">–</td>';
-          return detail
-            ? '<td class="num">' + won(x.tariff) + '</td><td class="num">' + won(x.downhill) + '</td><td class="num strong total-cell">' + won(x.total) + '</td>'
-            : '<td class="num strong total-cell">' + won(x.total) + '</td>';
+          if (r.overMax) return '<td class="muted small">별도 문의</td>';
+          if (!x || x.total == null) return '<td>–</td>';
+          return '<td class="num strong total-cell">' + won(x.total) + '</td>';
         }).join('') + '</tr>';
     }).join('');
 
@@ -905,7 +891,7 @@
       '<div class="card" style="--i:0">' +
       '<div class="row-between" style="flex-wrap:wrap;margin-bottom:14px"><div><div class="eyebrow">Result · 대량 결과</div>' +
       '<h3>' + won(all.length) + '건 · <span style="color:var(--green)">성공 ' + won(okRows.length) + '</span>' + (fail ? ' · <span style="color:var(--red)">실패 ' + won(fail) + '</span>' : '') + '</h3>' +
-      '<p class="muted small" style="margin:4px 0 0">평균 거리 ' + won(avg) + 'km' + (meta.diesel ? ' · 경유가 ' + won(meta.diesel.price) + '원/L (' + esc(meta.diesel.source) + ')' : '') + ' · 지역할증은 톤수별 합계에 포함</p></div>' +
+      '<p class="muted small" style="margin:4px 0 0">평균 거리 ' + won(avg) + 'km' + (meta.diesel ? ' · 경유가 ' + won(meta.diesel.price) + '원/L (' + esc(meta.diesel.source) + ')' : '') + ' · 톤수별 금액 = 기본타리프 + 기본타리프 × 하행 + 지역할증</p></div>' +
       '<div class="actions">' + (opts.live && fail && !b.running ? '<button class="btn btn-sm btn-danger" data-act="retry">실패 ' + won(fail) + '건 다시 계산</button>' : '') +
       (opts.recordId && !b.running ? '<button class="btn btn-sm" data-act="saveQuote">견적으로 저장</button>' : '') +
       (!b.running && okRows.length ? '<button class="btn btn-sm" data-act="qdoc">견적서</button>' : '') +
@@ -914,7 +900,6 @@
       '<input class="input input-sm" data-el="search" placeholder="주소 검색" value="' + esc(b.search || '') + '" style="max-width:240px">' +
       '<select class="input input-sm" data-el="sort" style="width:auto"><option value="no">입력 순서</option><option value="kmAsc">거리 가까운 순</option><option value="kmDesc">거리 먼 순</option><option value="mrDesc">밀크런 금액 큰 순</option></select>' +
       '<div class="segmented" data-el="filter"><button type="button" data-f="all" class="' + (b.filter !== 'fail' ? 'on' : '') + '">전체</button><button type="button" data-f="fail" class="' + (b.filter === 'fail' ? 'on' : '') + '">실패만</button></div>' +
-      '<label class="toggle" style="margin-left:auto"><input type="checkbox" data-el="detail"' + (detail ? ' checked' : '') + '><span class="track"></span>톤수별 상세</label>' +
       '</div>' +
       (tons.length ? '' : '<p class="hint" style="margin:0 0 10px">' + esc(opts.emptyHint || '') + '</p>') +
       '<div class="bulk-table"><table class="data bulk"><thead>' + head1 + head2 + '</thead><tbody>' + (body || '<tr><td colspan="' + colCount + '" class="left muted" style="padding:24px">조건에 맞는 결과가 없습니다.</td></tr>') + '</tbody></table></div>' +
@@ -933,7 +918,6 @@
       st = setTimeout(function () { b.search = v; b.page = 0; again(); var el = $('[data-el="search"]', box); el.focus(); el.setSelectionRange(v.length, v.length); }, 250);
     };
     $$('[data-el="filter"] button', box).forEach(function (x) { x.onclick = function () { b.filter = x.dataset.f; b.page = 0; again(); }; });
-    $('[data-el="detail"]', box).onchange = function () { b.detail = this.checked; again(); };
     $$('.pager button', box).forEach(function (x) { x.onclick = function () { b.page = Number(x.dataset.p); again(); box.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
     var rt = $('[data-act="retry"]', box); if (rt) rt.onclick = retryFailed;
     var sv = $('[data-act="saveQuote"]', box); if (sv) sv.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }); };
@@ -947,42 +931,12 @@
   }
 
   function exportBulk(btn, b, opts) {
-    var tons = opts.tons, meta = b.meta || {};
-    var head = ['No', '상차지(입력)', '하차지(입력)', '상차지(찾은 주소)', '하차지(찾은 주소)', '거리(km)', '요금기준(km)', '방향', '하행할증(%)', '지역할증 내역', '지역할증 합계',
-      '밀크런 기준톤수', '편도/왕복', '밀크런 거리(km)', '경유가(원/L)', '유류비', '통행료', '유류비+통행료'];
-    tons.forEach(function (t) { head.push(t + ' 타리프', t + ' 하행할증', t + ' 합계'); });
-    head.push('오류');
-    var rows = b.results.slice().sort(function (x, y) { return x.no - y.no; }).map(function (row) {
-      if (row.status !== 'ok') {
-        var e = [row.no, row.origin, row.dest];
-        while (e.length < head.length - 1) e.push('');
-        e.push(row.error || '');
-        return e;
-      }
-      var r = row.result, m = r.milkrun, byTon = {};
-      r.rows.forEach(function (x) { byTon[x.ton] = x; });
-      var out = [row.no, row.origin, row.dest, r.origin.address, r.dest.address, r.distanceKm, r.km, r.direction, r.downhillPercent, regionText(r), r.regionTotal,
-        m.ton, m.roundTrip ? '왕복' : '편도', m.distanceKm, m.dieselPrice, m.fuel, m.toll, m.total];
-      tons.forEach(function (t) {
-        var x = byTon[t];
-        if (r.overMax || !x) out.push('별도 문의', '', ''); else out.push(x.tariff, x.downhill, x.total);
-      });
-      out.push('');
-      return out;
+    exportResultsXlsx(btn, b.results, {
+      tons: opts.tons, title: '대량 운임 견적 · ' + won(b.results.length) + '건', meta: b.meta || {}, roundTrip: opts.roundTrip, when: opts.when, who: opts.who,
+      fileName: 'JOIL_대량견적_' + (opts.fileDate || today()) + '_' + b.results.length + '건.xlsx'
     });
-    var widths = [5, 28, 28, 30, 30, 9, 10, 6, 9, 26, 10, 12, 8, 12, 10, 10, 10, 12].concat(tons.reduce(function (a) { return a.concat([11, 10, 11]); }, [])).concat([30]);
-    var ok = b.results.filter(function (r) { return r.status === 'ok'; }).length;
-    var cond = [['항목', '값'], ['조회 일시', opts.when || new Date().toLocaleString('ko-KR')], ['조회자', opts.who || (state.user.name + ' (' + state.user.id + ')')],
-      ['전체 건수', b.results.length], ['성공', ok], ['실패', b.results.length - ok],
-      ['밀크런 기준 톤수', meta.baseTon || ''], ['편도/왕복', opts.roundTrip ? '왕복' : '편도'],
-      ['경유가(원/L)', meta.diesel ? meta.diesel.price : ''], ['경유가 출처', meta.diesel ? meta.diesel.source : ''],
-      ['비고', '톤수별 합계 = 타리프 + 지역할증 + 하행할증 / 유류비·통행료는 밀크런 기준 톤수로 별도 계산']];
-    busy(btn, true, '만드는 중…');
-    downloadXlsx('조일ver1_대량견적_' + (opts.fileDate || today()) + '_' + b.results.length + '건.xlsx', [
-      { name: '대량 견적', rows: [head].concat(rows), widths: widths },
-      { name: '조건', rows: cond, widths: [16, 60] }
-    ]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
   }
+
 
   /* ───────── 견적으로 저장 ───────── */
 
@@ -1885,7 +1839,7 @@
       '<div class="dz-meta"><span><b>마지막 기록</b> ' + esc(st.last || '없음') + '</span><span><b>기록</b> ' + won(st.count || 0) + '일' + (st.first ? ' (' + esc(st.first) + '부터)' : '') + '</span>' +
       '<span><b>매일 자동 기록</b> ' + (st.triggerOn ? '<span class="status-pill ok">켜짐 · 매일 아침 7시</span>' : st.triggerOn === false ? '<span class="status-pill no">꺼짐</span>' : '<span class="status-pill no">권한 승인 필요</span>') + '</span>' +
       '<span><b>오피넷 키</b> ' + (st.hasKey ? '설정됨' : '<span class="err-text">없음 (API 키 탭)</span>') + '</span></div></div>' +
-      (st.triggerOn ? '' : '<p class="notice">매일 자동 기록을 켜려면: 구글 시트 메뉴 <b>조일ver1 → 유가 자동 기록 켜기</b>를 한 번 누르세요. (또는 Apps Script 편집기에서 <code>installDieselTrigger</code> 실행) 권한 승인 창이 뜨면 허용하면 돼요.</p>') +
+      (st.triggerOn ? '' : '<p class="notice">매일 자동 기록을 켜려면: 구글 시트 메뉴 <b>조일그룹 시스템 → 유가 자동 기록 켜기</b>를 한 번 누르세요. (또는 Apps Script 편집기에서 <code>installDieselTrigger</code> 실행) 권한 승인 창이 뜨면 허용하면 돼요.</p>') +
       '</div>' +
       '<div class="card" style="margin-bottom:16px"><div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:6px"><h3>추이</h3><div class="segmented" id="dzRange">' +
       [[30, '1개월'], [90, '3개월'], [365, '1년'], [1095, '3년'], [0, '전체']].map(function (x) { return '<button type="button" data-r="' + x[0] + '" class="' + (dz.range === x[0] ? 'on' : '') + '">' + x[1] + '</button>'; }).join('') + '</div></div>' +
@@ -2057,7 +2011,7 @@
     var more = $('#anomMore'); if (more) more.onclick = function () { set.limit += 100; drawAnomalies(rows); };
     var ax = $('#anomX'); if (ax) ax.onclick = function () {
       var btn = this; busy(btn, true, '…');
-      downloadXlsx('조일ver1_단가이상치_' + (isBuy ? '매입' : '매출') + '_' + an.f.from + '_' + an.f.to + '.xlsx', [{
+      downloadXlsx('JOIL_단가이상치_' + (isBuy ? '매입' : '매출') + '_' + an.f.from + '_' + an.f.to + '.xlsx', [{
         name: isBuy ? '매입 비싼 오더' : '매출 싼 오더', widths: [11, 10, 26, 18, 18, 8, 12, 12, 12, 9, 12, 10, 12, 20, 20],
         rows: [['날짜', '사업자', '매출처', '발지', '착지', '중량', isBuy ? '매입' : '매출', '보통 단가', '차이', '벗어난 정도(%)', isBuy ? '매출' : '매입', '기사명', '차량번호', '기타1', '비고']].concat(list.map(function (x) {
           var r = x.r;
@@ -2196,7 +2150,7 @@
       '<tr><td class="left">매출이 평소보다 싼 오더</td><td class="num">' + won(sellAnom.length) + '건</td><td class="num neg">−' + won(sumDiff(sellAnom)) + '원</td></tr></tbody></table>' +
       (buyAnom.length ? '<p class="small muted" style="margin:8px 0 4px">매입 초과 상위 5건</p>' + tbl(buyAnom.slice(0, 5), [['날짜', function (x) { return '<td class="left small">' + esc(x.r[C.date]) + '</td>'; }, 1], ['매출처', function (x) { return '<td class="left">' + esc(x.r[C.disp]) + '</td>'; }, 1], ['경로', function (x) { return '<td class="left">' + esc(x.r[C.from] + ' → ' + x.r[C.to] + ' · ' + x.r[C.weight]) + '</td>'; }, 1], ['매입', function (x) { return numCell(won(x.r[C.buys])); }], ['보통', function (x) { return numCell(won(Math.round(x.base))); }], ['기사', function (x) { return '<td class="left small">' + esc(x.r[C.driver]) + '</td>'; }, 1]]) : '') +
       '</section>' +
-      '<footer class="rpt-foot muted small">조일ver1 · 이익 = 매출후불 − 매입후불</footer></div>';
+      '<footer class="rpt-foot muted small">조일그룹 견적·실적 시스템 · 이익 = 매출후불 − 매입후불</footer></div>';
     var wrap = document.createElement('div');
     wrap.id = 'report';
     wrap.innerHTML = html;
@@ -2217,7 +2171,7 @@
       ];
       if (hasCmp) sheets.push({ name: '확인해 볼 곳', widths: [32, 9, 12, 10, 15, 15], rows: [['매출처', '이익률(%)', cr.label + '(%)', '변화(%p)', '이익', '매출']].concat(watch.map(function (x) { return [(x.turned ? '[적자 전환] ' : '') + x.k, x.r == null ? '' : +x.r.toFixed(1), x.cr == null ? '' : +x.cr.toFixed(1), x.dr == null ? '' : +x.dr.toFixed(1), x.p, x.s]; })) });
       sheets.push({ name: '단가 이상치', widths: [8, 11, 26, 18, 18, 8, 12, 12, 12, 10], rows: [['구분', '날짜', '매출처', '발지', '착지', '중량', '금액', '보통 단가', '차이', '기사명']].concat(buyAnom.map(function (x) { return ['매입 비쌈', x.r[C.date], x.r[C.disp], x.r[C.from], x.r[C.to], x.r[C.weight], x.r[C.buys], Math.round(x.base), Math.round(x.diff), x.r[C.driver]]; })).concat(sellAnom.map(function (x) { return ['매출 쌈', x.r[C.date], x.r[C.disp], x.r[C.from], x.r[C.to], x.r[C.weight], x.r[C.sales], Math.round(x.base), Math.round(x.diff), x.r[C.driver]]; })) });
-      downloadXlsx('조일ver1_매출매입보고_' + period.replace(/ ~ /, '_') + '.xlsx', sheets).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+      downloadXlsx('JOIL_매출매입보고_' + period.replace(/ ~ /, '_') + '.xlsx', sheets).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
     };
   }
 
@@ -2737,7 +2691,7 @@
       var btn = this; busy(btn, true, '…');
       var head = isRoute ? ['발지', '착지', '중량', '건수', '매출', '매입', '이익', '이익률(%)', '건당 이익'] : [def[1], '건수', '매출', '매입', '이익', '이익률(%)', '건당 이익'];
       if (hasCmp) head.push(cr.label + ' 이익률(%)', '이익률 변화(%p)');
-      downloadXlsx('조일ver1_분석_' + def[1] + '별_' + f.from + '_' + f.to + '.xlsx', [{
+      downloadXlsx('JOIL_분석_' + def[1] + '별_' + f.from + '_' + f.to + '.xlsx', [{
         name: def[1] + '별', widths: isRoute ? [24, 24, 10, 8, 14, 14, 14, 9, 12, 12, 12] : [36, 8, 14, 14, 14, 9, 12, 12, 12],
         rows: [head].concat(list.map(function (x) {
           var row = (isRoute ? [x.parts[0], x.parts[1], an.routeWeight ? x.parts[2] : '(전체)'] : [x.k]).concat([x.n, x.s, x.b, x.p, x.r == null ? '' : Math.round(x.r * 10) / 10, Math.round(x.u)]);
@@ -2776,7 +2730,7 @@
       var cond = [['항목', '값'], ['기간', f.from + ' ~ ' + f.to], ['사업자', f.biz.join(', ') || '전체'], ['검색', f.q || '-']];
       Object.keys(f.sel).forEach(function (k) { if ((f.sel[k] || []).length) cond.push([dimDef(k)[1], f.sel[k].join(', ')]); });
       cond.push(['내려받은 사람', state.user.name + ' (' + state.user.id + ')'], ['내려받은 시각', new Date().toLocaleString('ko-KR')]);
-      downloadXlsx('조일ver1_분석내역_' + f.from + '_' + f.to + '_' + rows.length + '건.xlsx', [
+      downloadXlsx('JOIL_분석내역_' + f.from + '_' + f.to + '_' + rows.length + '건.xlsx', [
         { name: '상세 내역', widths: [11, 10, 26, 30, 16, 16, 8, 12, 12, 12, 13, 8, 14, 16, 20], rows: [['날짜', '사업자', '매출처(표시)', '매출처(원본)', '발지', '착지', '중량', '매출후불', '매입후불', '이익', '차량번호', '기사명', '차량전화', '기타1', '비고']].concat(body) },
         { name: '조건', widths: [14, 60], rows: cond }
       ]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
@@ -3113,7 +3067,7 @@
       };
     });
     $('#csvBtn').onclick = function () {
-      downloadCsv('조일ver1_타리프_' + today() + '.csv', [['km'].concat(tons)].concat(t.rows.map(function (r, i) { return [i + 1].concat(r); })));
+      downloadCsv('JOIL_타리프_' + today() + '.csv', [['km'].concat(tons)].concat(t.rows.map(function (r, i) { return [i + 1].concat(r); })));
     };
     var rv = $('#revertBtn');
     if (rv) rv.onclick = function () {
@@ -3442,6 +3396,215 @@
     };
   }
 
+  /* ───────── 서식 있는 엑셀 (ExcelJS) ─────────
+   * 결과 엑셀(내부 검산용): 톤수 칸에 수식 = 기본타리프 + 기본타리프×하행 + 지역할증 → 반올림
+   * 견적서 엑셀(고객용): 미리보기와 같은 양식 + 직인, 금액은 숫자만
+   */
+  var excelJsLoading = null;
+  function loadExcelJS() {
+    if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+    if (excelJsLoading) return excelJsLoading;
+    excelJsLoading = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+      s.onload = function () { resolve(window.ExcelJS); };
+      s.onerror = function () { excelJsLoading = null; reject(new Error('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인하세요.')); };
+      document.head.appendChild(s);
+    });
+    return excelJsLoading;
+  }
+  function saveWorkbook(wb, filename) {
+    // 엑셀 기본 한글 글꼴로 통일
+    wb.eachSheet(function (sh) { sh.eachRow(function (row) { row.eachCell(function (c) { c.font = Object.assign({ name: '맑은 고딕', size: 10 }, c.font || {}); }); }); });
+    return wb.xlsx.writeBuffer().then(function (buf) {
+      saveBlob(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), filename);
+    });
+  }
+  var XL = {
+    ink: 'FF1E1C19', panel: 'FFF4EEE3', line: 'FFC9BDA8', muted: 'FF7A7265', red: 'FFB4371F', mr: 'FFE6F3F5', note: 'FFFFF6D6',
+    thin: function (c) { var s = { style: 'thin', color: { argb: c || XL.line } }; return { top: s, left: s, bottom: s, right: s }; },
+    fill: function (c) { return { type: 'pattern', pattern: 'solid', fgColor: { argb: c } }; },
+    col: function (n) { var s = ''; n++; while (n > 0) { var m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+  };
+  function xlRoundFormula(expr) {
+    var pr = (state.pub && state.pub.priceRounding) || { unit: 1000, mode: 'round' };
+    var u = Number(pr.unit) || 1, fn = pr.mode === 'ceil' ? 'ROUNDUP' : pr.mode === 'floor' ? 'ROUNDDOWN' : 'ROUND';
+    return u === 1 ? fn + '(' + expr + ',0)' : fn + '((' + expr + ')/' + u + ',0)*' + u;
+  }
+
+  /**
+   * 결과 엑셀 (단건·대량 공용, 내부 검산용)
+   * items: [{ no, origin, dest, status, result, error }], opts: { tons, title, fileName, meta, roundTrip, when, who }
+   */
+  function exportResultsXlsx(btn, items, opts) {
+    busy(btn, true, '만드는 중…');
+    return loadExcelJS().then(function (EJ) {
+      var tons = opts.tons, meta = opts.meta || {};
+      var wb = new EJ.Workbook();
+      var HEAD = 4, TS = '기본타리프';
+      var fixed = ['No', '상차지', '하차지', '거리(km)', '요금기준(km)', '지역할증', '하행', '밀크런 유류비', '통행료', '유류비+통행료'];
+      var first = fixed.length; // 톤수 시작 열(0부터)
+      var ws = wb.addWorksheet('견적', { views: [{ state: 'frozen', xSplit: 3, ySplit: HEAD }], pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
+      var wt = wb.addWorksheet(TS, { views: [{ state: 'frozen', xSplit: 3, ySplit: HEAD }], pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
+      ws.columns = [6, 34, 34, 9, 10, 11, 8, 12, 11, 13].concat(tons.map(function () { return 12; })).concat([36]).map(function (w) { return { width: w }; });
+      wt.columns = [6, 34, 34, 10].concat(tons.map(function () { return 12; })).map(function (w) { return { width: w }; });
+      var lastCol = first + tons.length; // 오류 열
+      ws.mergeCells(1, 1, 1, lastCol + 1);
+      ws.getCell(1, 1).value = opts.title || '운임 견적 (내부 검산용)';
+      ws.getCell(1, 1).font = { size: 15, bold: true };
+      ws.mergeCells(2, 1, 2, lastCol + 1);
+      var pr = (state.pub && state.pub.priceRounding) || { unit: 1000, mode: 'round' };
+      ws.getCell(2, 1).value = '톤수 칸 = 기본타리프(' + TS + ' 시트) + 기본타리프 × 하행 + 지역할증 → ' + won(pr.unit) + '원 단위 ' + (pr.mode === 'ceil' ? '올림' : pr.mode === 'floor' ? '내림' : '반올림') +
+        ' · 지역할증·하행 칸을 고치면 합계가 다시 계산됩니다 · ' + (opts.when || today()) + ' ' + (opts.who || state.user.name);
+      ws.getCell(2, 1).font = { size: 9.5, color: { argb: XL.muted } };
+      wt.getCell(1, 1).value = '기본 타리프 (할증 전 단가 · 견적 시트의 수식이 이 값을 씁니다)';
+      wt.getCell(1, 1).font = { size: 13, bold: true };
+      var head = fixed.concat(tons).concat(['오류']);
+      head.forEach(function (h, i) {
+        var c = ws.getCell(HEAD, i + 1);
+        c.value = h; c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = XL.fill(i >= 7 && i <= 9 ? 'FF2A7D8B' : XL.ink); c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = XL.thin();
+      });
+      ws.getRow(HEAD).height = 30;
+      ['No', '상차지', '하차지', '요금기준(km)'].concat(tons).forEach(function (h, i) {
+        var c = wt.getCell(HEAD, i + 1); c.value = h; c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = XL.fill(XL.ink); c.alignment = { horizontal: 'center' }; c.border = XL.thin();
+      });
+      items.slice().sort(function (x, y) { return x.no - y.no; }).forEach(function (row, idx) {
+        var R = HEAD + 1 + idx;
+        var put = function (sheet, col, v, fmt) { var c = sheet.getCell(R, col + 1); c.value = v; if (fmt) c.numFmt = fmt; c.border = XL.thin(); return c; };
+        put(ws, 0, row.no); put(wt, 0, row.no);
+        if (row.status !== 'ok' || !row.result) {
+          put(ws, 1, row.origin); put(ws, 2, row.dest);
+          for (var k = 3; k < lastCol; k++) put(ws, k, '');
+          var e = put(ws, lastCol, row.error || '실패'); e.font = { color: { argb: XL.red } };
+          put(wt, 1, row.origin); put(wt, 2, row.dest);
+          return;
+        }
+        var r = row.result, m = r.milkrun, byTon = {};
+        r.rows.forEach(function (x) { byTon[x.ton] = x; });
+        put(ws, 1, r.origin.address); put(ws, 2, r.dest.address);
+        put(ws, 3, r.distanceKm, '#,##0.0'); put(ws, 4, r.km, '#,##0');
+        put(ws, 5, r.regionTotal, '#,##0');
+        put(ws, 6, r.downhillApplied ? r.downhillPercent / 100 : 0, '0%');
+        [m.fuel, m.toll, m.total].forEach(function (v, i) { var c = put(ws, 7 + i, v, '#,##0'); c.fill = XL.fill(XL.mr); });
+        put(wt, 1, r.origin.address); put(wt, 2, r.dest.address); put(wt, 3, r.km, '#,##0');
+        tons.forEach(function (t, i) {
+          var x = byTon[t], col = first + i;
+          if (r.overMax || !x || x.tariff == null) {
+            put(ws, col, '별도 문의').font = { color: { argb: XL.muted } };
+            put(wt, 4 + i, '');
+            return;
+          }
+          put(wt, 4 + i, x.tariff, '#,##0');
+          var T = "'" + TS + "'!" + XL.col(4 + i) + R, H = '$' + XL.col(6) + R, G = '$' + XL.col(5) + R;
+          var c = put(ws, col, { formula: xlRoundFormula(T + '+ROUND(' + T + '*' + H + ',0)+' + G), result: x.total }, '#,##0');
+          c.font = { bold: true };
+        });
+        put(ws, lastCol, '');
+      });
+      var cs = wb.addWorksheet('조건');
+      cs.columns = [{ width: 18 }, { width: 70 }];
+      var ok = items.filter(function (x) { return x.status === 'ok'; }).length;
+      [['조회 일시', opts.when || new Date().toLocaleString('ko-KR')], ['조회자', opts.who || (state.user.name + ' (' + state.user.id + ')')], ['전체 건수', items.length], ['성공', ok], ['실패', items.length - ok],
+        ['밀크런 기준 톤수', meta.baseTon || ''], ['편도/왕복', opts.roundTrip ? '왕복' : '편도'], ['경유가(원/L)', meta.diesel ? meta.diesel.price : ''], ['경유가 출처', meta.diesel ? meta.diesel.source || '' : ''],
+        ['계산식', '톤수별 합계 = 기본타리프 + 기본타리프 × 하행% + 지역할증 (금액 단위 ' + won(pr.unit) + '원)'], ['참고', '유류비·통행료는 밀크런 기준 톤수로 따로 계산하며 톤수별 합계에는 들어가지 않습니다.']
+      ].forEach(function (r, i) { cs.getCell(i + 1, 1).value = r[0]; cs.getCell(i + 1, 1).font = { bold: true }; cs.getCell(i + 1, 2).value = r[1]; });
+      return saveWorkbook(wb, opts.fileName);
+    }).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+  }
+
+  /** 견적서 엑셀 (고객용 양식, 금액은 숫자) */
+  function quoteDocXlsx(btn, d) {
+    busy(btn, true, '만드는 중…');
+    return loadExcelJS().then(function (EJ) {
+      var wb = new EJ.Workbook();
+      var nT = d.tons.length + (d.milkrun ? 1 : 0);
+      var N = Math.max(4 + nT, 7); // 전체 열 수
+      var ws = wb.addWorksheet('견적서', { pageSetup: { paperSize: 9, orientation: N > 9 ? 'landscape' : 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 }, horizontalCentered: true }, views: [{ showGridLines: false }] });
+      var widths = [6, 30, 30, 10];
+      for (var i = 4; i < N; i++) widths.push(N <= 8 ? 17 : 13);
+      ws.columns = widths.map(function (w) { return { width: w }; });
+      var border = XL.thin(), bold = { bold: true };
+      // 맨 위 띠 + 제목
+      for (var cc = 1; cc <= N; cc++) ws.getCell(1, cc).fill = XL.fill(['FFE0472E', 'FFF07A22', 'FFF4BE2E', 'FF4FA864', 'FF2A9DB0'][Math.floor((cc - 1) / N * 5)]);
+      ws.getRow(1).height = 6;
+      ws.mergeCells(2, 1, 2, N);
+      var t = ws.getCell(2, 1); t.value = '견   적   서'; t.font = { size: 26, bold: true }; t.alignment = { horizontal: 'center', vertical: 'middle' };
+      ws.getRow(2).height = 52;
+      // 왼쪽: 견적 정보 (A~C)
+      var left = [['견적번호', d.no], ['견적일', d.date], ['유효기간', d.valid]];
+      left.forEach(function (kv, i) {
+        var r = 4 + i;
+        ws.getCell(r, 1).value = kv[0]; ws.getCell(r, 1).font = { color: { argb: XL.muted }, size: 10 };
+        ws.mergeCells(r, 2, r, 3); ws.getCell(r, 2).value = kv[1] || ''; ws.getCell(r, 2).font = bold;
+      });
+      ws.mergeCells(7, 1, 7, 3);
+      var rc = ws.getCell(7, 1);
+      rc.value = { richText: [{ text: (d.to || '') + '  ', font: { size: 16, bold: true } }, { text: '귀하', font: { size: 11, bold: true } }] };
+      rc.border = { bottom: { style: 'medium', color: { argb: XL.ink } } };
+      ws.getRow(7).height = 28;
+      if (d.ref) { ws.getCell(8, 1).value = '참조'; ws.getCell(8, 1).font = { color: { argb: XL.muted }, size: 10 }; ws.mergeCells(8, 2, 8, 3); ws.getCell(8, 2).value = d.ref; ws.getCell(8, 2).font = bold; }
+      ws.mergeCells(9, 1, 9, 3); ws.getCell(9, 1).value = '아래와 같이 견적합니다.';
+      // 오른쪽: 공급자 (D~끝)
+      var sup = d.supplier, S0 = 4;
+      ws.mergeCells(S0, 4, S0 + sup.length - 1, 4);
+      var sv = ws.getCell(S0, 4); sv.value = '공\n급\n자'; sv.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; sv.font = bold; sv.fill = XL.fill(XL.panel); sv.border = border;
+      sup.forEach(function (kv, i) {
+        var r = S0 + i;
+        var l = ws.getCell(r, 5); l.value = kv[0]; l.font = bold; l.fill = XL.fill(XL.panel); l.border = border; l.alignment = { vertical: 'middle' };
+        ws.mergeCells(r, 6, r, N);
+        var v = ws.getCell(r, 6); v.value = kv[1] + (kv[0] === '대표자' ? '   (인)' : ''); v.border = border; v.alignment = { vertical: 'middle', shrinkToFit: true };
+        for (var c2 = 7; c2 <= N; c2++) ws.getCell(r, c2).border = border;
+        ws.getRow(r).height = 20;
+      });
+      if (d.stamp) {
+        var img = wb.addImage({ base64: d.stamp, extension: /image\/jpeg/.test(d.stamp) ? 'jpeg' : 'png' });
+        // "(인)" 글자 위에 오도록: 대표자 이름 길이만큼 오른쪽으로
+        var colPx = ws.getColumn(6).width * 7 + 5, ceo = (sup.filter(function (x) { return x[0] === '대표자'; })[0] || ['', ''])[1];
+        var off = Math.max(0, Math.min(colPx * 2, String(ceo).length * 13 + 28 - 31));
+        ws.addImage(img, { tl: { col: 5 + off / colPx, row: S0 - 0.25 }, ext: { width: 62, height: 62 }, editAs: 'oneCell' });
+      }
+      // 견적 금액 상자
+      var B = S0 + sup.length + 1;
+      ws.mergeCells(B, 1, B, N);
+      var bx = ws.getCell(B, 1);
+      bx.value = { richText: [{ text: '견적 금액    ', font: { bold: true, size: 11 } }, { text: d.sumText, font: { bold: true, size: 14 } }].concat(d.vat ? [{ text: '      (부가세 별도)', font: { size: 10, color: { argb: XL.muted } } }] : []) };
+      bx.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
+      bx.alignment = { vertical: 'middle', indent: 1 };
+      ws.getRow(B).height = 34;
+      // 금액 표
+      var H = B + 2;
+      var head = ['No', '상차지', '하차지', '거리'].concat(d.tons).concat(d.milkrun ? [d.mrLabel] : []);
+      for (var hc = 1; hc <= N; hc++) {
+        var h = ws.getCell(H, hc); h.value = head[hc - 1] || ''; h.font = { bold: true, color: { argb: 'FF5A5246' } }; h.fill = XL.fill(XL.panel);
+        h.border = { top: { style: 'thin', color: { argb: XL.ink } }, bottom: { style: 'thin', color: { argb: XL.ink } } }; h.alignment = { horizontal: hc <= 3 ? 'left' : 'right', vertical: 'middle', wrapText: true };
+      }
+      ws.getRow(H).height = 22;
+      d.rows.forEach(function (row, i) {
+        var r = H + 1 + i;
+        var vals = [i + 1, row.from, row.to, row.km + 'km'].concat(row.prices).concat(d.milkrun ? [row.mr] : []);
+        for (var c3 = 1; c3 <= N; c3++) {
+          var c = ws.getCell(r, c3), v = vals[c3 - 1];
+          c.value = v == null ? (c3 <= vals.length ? '별도 문의' : '') : v;
+          if (typeof v === 'number' && c3 > 4) c.numFmt = '#,##0';
+          c.alignment = { horizontal: c3 <= 3 ? 'left' : 'right', vertical: 'middle', shrinkToFit: c3 === 2 || c3 === 3 };
+          c.border = { bottom: { style: 'hair', color: { argb: XL.line } } };
+        }
+      });
+      var r0 = H + 1 + d.rows.length + 1;
+      if (d.notes.length) {
+        ws.getCell(r0, 1).value = '비고'; ws.getCell(r0, 1).font = bold;
+        d.notes.forEach(function (n, i) { ws.mergeCells(r0 + 1 + i, 1, r0 + 1 + i, N); ws.getCell(r0 + 1 + i, 1).value = '· ' + n; ws.getCell(r0 + 1 + i, 1).font = { size: 10 }; });
+        r0 += d.notes.length + 2;
+      }
+      if (d.bank) { ws.mergeCells(r0, 1, r0, N); ws.getCell(r0, 1).value = { richText: [{ text: '입금 계좌  ', font: bold }, { text: d.bank }] }; r0 += 2; }
+      ws.mergeCells(r0, 1, r0, N);
+      var f = ws.getCell(r0, 1); f.value = d.footer; f.alignment = { horizontal: 'center' }; f.font = { size: 10 };
+      f.border = { top: { style: 'medium', color: { argb: XL.ink } } };
+      ws.pageSetup.printArea = 'A1:' + XL.col(N - 1) + r0;
+      return saveWorkbook(wb, d.fileName);
+    }).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+  }
+
   /* ───────── 견적서 (B3) ───────── */
   /*
    * src: { type: '단건'|'대량', items: [{ origin, dest, result }], tons, meta: { baseTon, roundTrip, diesel } }
@@ -3502,14 +3665,13 @@
       return x ? x.total : null;
     };
     var cell = function (v) { return v == null ? '<td class="num muted">별도 문의</td>' : '<td class="num">' + won(v) + '</td>'; };
-    var bodyHtml, xlsRows;
+    var bodyHtml;
     var mrLabel = '유류비+통행료 (' + (src.meta.baseTon || '') + (src.meta.roundTrip ? ' 왕복' : ' 편도') + ')';
     if (src.type === '단건') {
       var r = ok[0].result;
       bodyHtml = '<table class="data rpt qd-table"><thead><tr><th class="left">구간</th><th>운행거리</th>' + o.tons.map(function (t) { return '<th>' + esc(t) + '</th>'; }).join('') + (o.milkrun ? '<th>' + esc(mrLabel) + '</th>' : '') + '</tr></thead><tbody>' +
         '<tr><td class="left"><span class="pin from"></span>' + esc(r.origin.address) + '<br><span class="pin to"></span>' + esc(r.dest.address) + '</td><td class="num">약 ' + r.distanceKm + 'km</td>' +
         o.tons.map(function (t) { return cell(priceOf(r, t)); }).join('') + (o.milkrun ? cell(r.milkrun.total) : '') + '</tr></tbody></table>';
-      xlsRows = [['상차지', '하차지', '운행거리(km)'].concat(o.tons).concat(o.milkrun ? [mrLabel] : [])].concat([[r.origin.address, r.dest.address, r.distanceKm].concat(o.tons.map(function (t) { var v = priceOf(r, t); return v == null ? '별도 문의' : v; })).concat(o.milkrun ? [r.milkrun.total] : [])]);
     } else {
       bodyHtml = '<table class="data rpt qd-table"><thead><tr><th>No</th><th class="left">상차지</th><th class="left">하차지</th><th>거리</th>' + o.tons.map(function (t) { return '<th>' + esc(t) + '</th>'; }).join('') + (o.milkrun ? '<th>' + esc(mrLabel) + '</th>' : '') + '</tr></thead><tbody>' +
         ok.map(function (x, i) {
@@ -3517,10 +3679,6 @@
           return '<tr><td class="num muted">' + (i + 1) + '</td><td class="left">' + esc(rr.origin.address) + '</td><td class="left">' + esc(rr.dest.address) + '</td><td class="num">' + rr.distanceKm + 'km</td>' +
             o.tons.map(function (t) { return cell(priceOf(rr, t)); }).join('') + (o.milkrun ? cell(rr.milkrun.total) : '') + '</tr>';
         }).join('') + '</tbody></table>';
-      xlsRows = [['No', '상차지', '하차지', '거리(km)'].concat(o.tons).concat(o.milkrun ? [mrLabel] : [])].concat(ok.map(function (x, i) {
-        var rr = x.result;
-        return [i + 1, rr.origin.address, rr.dest.address, rr.distanceKm].concat(o.tons.map(function (t) { var v = priceOf(rr, t); return v == null ? '별도 문의' : v; })).concat(o.milkrun ? [rr.milkrun.total] : []);
-      }));
     }
     var noteLines = [];
     if (o.vat && !/부가세/.test(o.note || '')) noteLines.push('위 금액은 부가세 별도입니다.');
@@ -3561,13 +3719,15 @@
     $('#qdClose').onclick = close;
     $('#qdPrint').onclick = function () { window.print(); };
     $('#qdX').onclick = function () {
-      var btn = this; busy(btn, true, '…');
-      var head = [['견 적 서'], [], ['견적번호', no], ['견적일', o.date], ['유효기간', o.valid], ['받는 곳', o.to ? o.to + ' 귀하' : ''], ['참조', o.ref], [],
-        ['공급자'], ['상호', coName], ['대표자', co.ceo || ''], ['사업자번호', co.bizNo || ''], ['주소', co.addr || ''], ['전화', co.tel || ''], ['팩스', co.fax || ''], ['담당', co.manager || ''], ['이메일', co.email || ''], []];
-      var tail = [[]].concat(noteLines.map(function (l) { return ['비고', l]; })).concat(co.bank ? [['입금 계좌', co.bank]] : []);
-      downloadXlsx('견적서_' + (o.to || coName).replace(/[\\/:*?"<>|]/g, '_') + '_' + o.date + '.xlsx', [
-        { name: '견적서', rows: head.concat(xlsRows).concat(tail), widths: src.type === '단건' ? [34, 34, 12].concat(o.tons.map(function () { return 12; })).concat([16]) : [6, 34, 34, 9].concat(o.tons.map(function () { return 12; })).concat([16]) }
-      ]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+      var one = src.type === '단건' && o.tons.length === 1 && priceOf(ok[0].result, o.tons[0]) != null;
+      quoteDocXlsx(this, {
+        no: no, date: o.date, valid: o.valid, to: o.to, ref: o.ref, vat: o.vat, tons: o.tons, milkrun: o.milkrun, mrLabel: mrLabel,
+        supplier: supplier.map(function (x) { return [x[0], x[1] || '']; }), stamp: co.stamp || '', bank: co.bank || '', notes: noteLines,
+        sumText: one ? '일금 ' + won(priceOf(ok[0].result, o.tons[0])) + '원정 (' + o.tons[0] + ')' : '아래 표 참조',
+        footer: [coName, co.addr, co.tel].filter(Boolean).join(' · '),
+        rows: ok.map(function (x) { var rr = x.result; return { from: rr.origin.address, to: rr.dest.address, km: rr.distanceKm, prices: o.tons.map(function (t) { return priceOf(rr, t); }), mr: rr.milkrun.total }; }),
+        fileName: '견적서_' + (o.to || coName).replace(/[\\/:*?"<>|]/g, '_') + '_' + o.date + '.xlsx'
+      });
     };
   }
 
@@ -3627,7 +3787,7 @@
     return api('docs.list').then(function (r) {
       state.docs.list = r.docs;
       if (state.view === 'docs') drawDocs();
-    }).catch(function (err) { var x = $('#dList'); if (x) x.innerHTML = '<p style="color:var(--red)">' + esc(err.message) + '</p>' + (/드라이브|Drive|권한|permission/i.test(err.message) ? '<p class="hint">서버 구글 시트 메뉴 <b>조일ver1 → 서류함 준비 (드라이브 권한)</b>을 한 번 실행해야 합니다.</p>' : ''); });
+    }).catch(function (err) { var x = $('#dList'); if (x) x.innerHTML = '<p style="color:var(--red)">' + esc(err.message) + '</p>' + (/드라이브|Drive|권한|permission/i.test(err.message) ? '<p class="hint">서버 구글 시트 메뉴 <b>조일그룹 시스템 → 서류함 준비 (드라이브 권한)</b>을 한 번 실행해야 합니다.</p>' : ''); });
   }
 
   function drawDocs() {
@@ -4136,7 +4296,7 @@
     ]]);
     $('#main').innerHTML =
       '<div class="help-grid"><nav class="card rail help-rail">' + sec.map(function (s) { return '<button data-sec="' + s[0] + '">' + s[1] + '</button>'; }).join('') + '</nav>' +
-      '<div><div class="card help-head"><div class="eyebrow">Guide · 사용 안내</div><h2>조일ver1 사용법</h2><p class="muted small" style="margin:6px 0 0">' + esc(state.user.name) + '님이 쓸 수 있는 메뉴만 안내합니다.</p></div>' +
+      '<div><div class="card help-head"><div class="eyebrow">Guide · 사용 안내</div><h2>JOIL 사용법</h2><p class="muted small" style="margin:6px 0 0">' + esc(state.user.name) + '님이 쓸 수 있는 메뉴만 안내합니다.</p></div>' +
       sec.map(function (s) {
         return '<section class="card help-sec" id="help-' + s[0] + '"><h3>' + s[1] + '</h3><ul>' + s[2].map(function (t) { return '<li>' + t + '</li>'; }).join('') + '</ul>' +
           (['calc', 'bulk', 'history', 'docs', 'analysis', 'admin'].indexOf(s[0]) !== -1 ? '<button class="btn btn-sm" data-open="' + (s[0] === 'history' ? 'quotes' : s[0]) + '">' + s[1].split(' · ')[0] + ' 열기 →</button>' : '') + '</section>';

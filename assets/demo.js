@@ -78,7 +78,7 @@
 
   function pubSettings() {
     var s = store.settings;
-    return { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, retentionDays: s.snapshot.retentionDays, quoteFooter: s.quoteFooter, maxKm: s.maxKm };
+    return { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, retentionDays: s.snapshot.retentionDays, quoteFooter: s.quoteFooter, maxKm: s.maxKm, priceRounding: s.priceRounding };
   }
   function userList() {
     return store.users.map(function (u) { return { id: u.id, name: u.name, role: u.role, active: u.active, mustChange: u.mustChange, createdAt: u.createdAt, lastLogin: u.lastLogin, perms: permsOf(u) }; });
