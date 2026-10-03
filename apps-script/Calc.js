@@ -7,7 +7,7 @@
  * 브라우저 전용 / Apps Script 전용 기능을 쓰지 않는 순수 함수만 둡니다.
  *
  * 계산 구조
- *  - 톤수별 견적 = 타리프 + 지역 할증(상·하차지 합산) + 하행 할증
+ *  - 톤수별 견적 = 타리프 + 지역 할증(상·하차지 합산) + 하행 할증 + 특수 추가운임(고른 것만)
  *  - 밀크런     = 기준 톤수 1개의 유류비 + 통행료 (편도 / 왕복)
  */
 
@@ -42,8 +42,19 @@ function joilDefaultSettings() {
       { name: '14톤', tollClass: 4, kmPerL: 3.2 },
       { name: '25톤', tollClass: 5, kmPerL: 2.8 }
     ],
-    quoteFooter: '※ 부가세 별도 / 대기·수작업 발생 시 별도 협의'
+    quoteFooter: '※ 부가세 별도 / 대기·수작업 발생 시 별도 협의',
+    // 특수 추가운임: 톤수별 금액(amount) 또는 타리프의 %(percent). 금액은 관리자 화면에서 넣음
+    specials: ['냉동', '냉장', '위험물', '유독물', '리프트', '무진동', '야간상차', '수작업', '구내이송', '파렛 폐기'].map(function (n, i) {
+      return { id: 'sp' + (i + 1), name: n, mode: 'amount', values: {} };
+    })
   };
+}
+
+/** 특수 추가운임 한 톤수 금액 (기본 타리프 기준) */
+function joilSpecialAmount(sp, ton, base) {
+  var v = Number((sp.values || {})[ton]) || 0;
+  if (!v || base == null) return 0;
+  return sp.mode === 'percent' ? Math.round(base * v / 100) : v;
 }
 
 /** 저장된 설정에 빠진 항목이 있으면 기본값으로 채우고, 없어진 항목은 버립니다. */
@@ -138,8 +149,10 @@ function joilComputeQuote(input, settings, tariff) {
     var col = tariff.tons.indexOf(t.name);
     var base = (!overMax && col !== -1) ? Number(tariff.rows[km - 1][col]) || 0 : null;
     var downhill = (base != null && downhillApplies) ? Math.round(base * Number(s.downhill.percent) / 100) : 0;
-    var total = base == null ? null : joilRound(base + regionTotal + downhill, s.priceRounding.unit, s.priceRounding.mode);
-    return { ton: t.name, tariff: base, region: regionTotal, downhill: downhill, total: total };
+    var special = 0;
+    (input.specials || []).forEach(function (sp) { special += joilSpecialAmount(sp, t.name, base); });
+    var total = base == null ? null : joilRound(base + regionTotal + downhill + special, s.priceRounding.unit, s.priceRounding.mode);
+    return { ton: t.name, tariff: base, region: regionTotal, downhill: downhill, special: special, total: total };
   });
 
   // 밀크런: 기준 톤수 하나로 유류비 + 통행료
@@ -161,6 +174,7 @@ function joilComputeQuote(input, settings, tariff) {
     downhillPercent: downhillApplies ? Number(s.downhill.percent) : 0,
     regionHits: regionHits,
     regionTotal: regionTotal,
+    specials: (input.specials || []).map(function (sp) { return { id: sp.id, name: sp.name, mode: sp.mode, values: sp.values || {}, cust: sp.cust || '' }; }),
     rows: rows,
     milkrun: {
       ton: baseTon.name,

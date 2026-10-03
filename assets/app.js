@@ -11,7 +11,9 @@
     user: null,
     pub: null,
     view: 'home',
-    calc: { origin: '', dest: '', dieselMode: null, dieselPrice: '', baseTon: null, tons: null, result: null },
+    calc: { origin: '', dest: '', dieselMode: null, dieselPrice: '', baseTon: null, tons: null, result: null, specials: [], cust: '' },
+    rateCusts: null,
+    rates: { custs: null, sel: '', data: null, cmp: null, q: '', ton: '', custQ: '' },
     hist: { days: 30, type: '', userId: '', q: '', logs: null, users: null, detail: null, detailData: null },
     quotes: { q: '', status: '', list: null, detail: null, detailData: null },
     docs: { list: null, biz: '', cat: '', q: '', sel: {}, blobs: {} },
@@ -60,7 +62,7 @@
    * - 조회성 요청(READ)은 오류·지연 시 1번 자동 재시도, 같은 요청이 동시에 겹치면 하나로 합침
    * - 저장·변경 요청은 중복 실행을 막기 위해 재시도하지 않음
    */
-  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory', 'docs.list', 'docs.get', 'addr.list', 'companies', 'diesel.recent', 'info.diesel', 'info.news', 'info.weather'];
+  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory', 'docs.list', 'docs.get', 'addr.list', 'companies', 'diesel.recent', 'info.diesel', 'info.news', 'info.weather', 'rates.list', 'rates.get'];
   var TIMEOUT_MS = 25000;
   var inflight = {};
 
@@ -226,7 +228,8 @@
     state.hist = { days: 30, type: '', userId: '', q: '', logs: null, users: null, detail: null, detailData: null };
     state.quotes = { q: '', status: '', list: null, detail: null, detailData: null };
     state.docs = { list: null, biz: '', cat: '', q: '', sel: {}, blobs: {} };
-    state.companies = null; state.addr = null;
+    state.companies = null; state.addr = null; state.rateCusts = null;
+    state.rates = { custs: null, sel: '', data: null, cmp: null, q: '', ton: '', custQ: '' };
     state.info = { tab: 'diesel', range: 90, diesel: null, news: null, weather: null, newsKw: '', newsQ: '' };
     state.an = newAnState();
     storage('del', 'joil-token');
@@ -250,8 +253,8 @@
 
   function navItems() {
     var items = [];
-    if (can('quote') || can('analysis')) items.push(['home', '홈'], ['info', '물류 정보']);
-    if (can('quote')) items.push(['calc', '단건 계산'], ['bulk', '대량 계산'], ['history', '조회기록'], ['quotes', '견적모음'], ['docs', '서류함']);
+    if (can('quote') || can('analysis')) items.push(['home', '홈'], ['info', '물류정보']);
+    if (can('quote')) items.push(['calc', '단건'], ['bulk', '대량'], ['history', '조회기록'], ['quotes', '견적모음'], ['rates', '업체단가'], ['docs', '서류함']);
     if (can('analysis')) items.push(['analysis', '분석']);
     if (state.user.role === 'admin') items.push(['admin', '관리자']);
     return items;
@@ -308,6 +311,7 @@
     else if (state.view === 'history') renderHistory();
     else if (state.view === 'quotes') renderQuotes();
     else if (state.view === 'docs') renderDocs();
+    else if (state.view === 'rates') renderRates();
     else if (state.view === 'help') renderHelp();
     else if (state.view === 'home') renderHome();
     else if (state.view === 'info') renderInfo();
@@ -392,7 +396,44 @@
       '<div><button type="button" class="btn btn-ghost btn-sm" id="tonAll">전체</button><button type="button" class="btn btn-ghost btn-sm" id="tonNone">해제</button></div></div>' +
       '<div class="chips" id="tonChips">' + state.pub.tons.map(function (t) {
         return '<button type="button" class="chip ' + (c.tons.indexOf(t) !== -1 ? 'on' : '') + '" data-t="' + esc(t) + '">' + esc(t) + '</button>';
-      }).join('') + '</div>';
+      }).join('') + '</div>' + specialsHtml();
+  }
+
+  /** 특수 추가운임 고르기 (관리자가 금액을 넣은 항목만) + 업체 기준 */
+  function specialsHtml() {
+    var c = state.calc, list = (state.pub.specials || []).filter(function (sp) { return sp.set; });
+    c.specials = (c.specials || []).filter(function (id) { return list.some(function (sp) { return sp.id === id; }); });
+    if (!list.length) return state.user.role === 'admin' ? '<p class="hint" style="margin:14px 0 0">특수 추가운임(냉동·리프트 등)은 <b>관리자 → 특수 운임</b>에서 금액을 넣으면 여기서 고를 수 있어요.</p>' : '';
+    return '<div class="row-between" style="margin:16px 0 10px;flex-wrap:wrap;gap:8px"><div class="eyebrow" style="margin:0">Special · 특수 추가운임</div>' +
+      '<select class="input input-sm" id="spCust" style="width:auto" title="업체별로 다르게 정한 특수운임이 있으면 그 기준으로 계산">' + custOptions() + '</select></div>' +
+      '<div class="chips" id="spChips">' + list.map(function (sp) {
+        return '<button type="button" class="chip sp-chip ' + (c.specials.indexOf(sp.id) !== -1 ? 'on' : '') + '" data-sp="' + esc(sp.id) + '">' + esc(sp.name) + (sp.mode === 'percent' ? ' %' : '') + '</button>';
+      }).join('') + '</div>' + (c.specials.length ? '<p class="hint" style="margin:8px 0 0">고른 특수운임이 톤수별 금액에 더해져요.</p>' : '');
+  }
+  function custOptions() {
+    var c = state.calc, custs = (state.rateCusts || []).filter(function (x) { return x.hasSpecial; });
+    return '<option value="">회사 기준</option>' +
+      custs.map(function (x) { return '<option value="' + esc(x.cust) + '"' + (c.cust === x.cust ? ' selected' : '') + '>' + esc(x.cust) + ' 기준</option>'; }).join('') +
+      (c.cust && !custs.some(function (x) { return x.cust === c.cust; }) ? '<option value="' + esc(c.cust) + '" selected>' + esc(c.cust) + ' 기준</option>' : '');
+  }
+  function ensureRateCusts(force) {
+    if ((state.rateCusts && !force) || state.rateCustsLoading || !can('quote')) return;
+    state.rateCustsLoading = true;
+    api('rates.list').then(function (r) {
+      state.rateCusts = r.custs;
+      var sel = $('#spCust'); if (sel) sel.innerHTML = custOptions();
+    }).catch(function () { state.rateCusts = state.rateCusts || []; }).then(function () { state.rateCustsLoading = false; });
+  }
+  function bindSpecials() {
+    var c = state.calc;
+    $$('#spChips .chip').forEach(function (ch) {
+      ch.onclick = function () {
+        var id = ch.dataset.sp, i = c.specials.indexOf(id);
+        if (i === -1) c.specials.push(id); else c.specials.splice(i, 1);
+        ch.classList.toggle('on', i === -1);
+      };
+    });
+    var sel = $('#spCust'); if (sel) sel.onchange = function () { c.cust = this.value; };
   }
 
   function bindOptions(onTonsChange) {
@@ -422,11 +463,13 @@
     });
     $('#tonAll').onclick = function () { setTons(state.pub.tons.slice()); };
     $('#tonNone').onclick = function () { setTons([]); };
+    bindSpecials();
+    ensureRateCusts();
   }
 
   function quoteOptions() {
     var c = state.calc;
-    return { dieselMode: c.dieselMode, dieselPrice: Number(c.dieselPrice), baseTon: c.baseTon };
+    return { dieselMode: c.dieselMode, dieselPrice: Number(c.dieselPrice), baseTon: c.baseTon, specials: (c.specials || []).slice(), cust: c.specials && c.specials.length ? c.cust || '' : '' };
   }
 
   function checkOptions() {
@@ -564,6 +607,13 @@
     if (adj && adj.cells && adj.cells.hasOwnProperty(k)) return adj.cells[k];
     return adjCalc(adj, no, ton, base);
   }
+  function specialNames(r) { return (r.specials || []).map(function (sp) { return sp.name; }).join('·') + ((r.specials || []).some(function (sp) { return sp.cust; }) ? ' (' + r.specials[0].cust + ')' : ''); }
+  function specialText(r, tons) {
+    return (r.specials || []).map(function (sp) {
+      var v = tons.filter(function (t) { return Number((sp.values || {})[t]); }).map(function (t) { return t + ' ' + (sp.mode === 'percent' ? sp.values[t] + '%' : '+' + won(sp.values[t])); });
+      return sp.name + (sp.cust ? '(' + sp.cust + ')' : '') + ': ' + (v.length ? v.join(', ') : '해당 톤수 금액 없음');
+    }).join(' / ');
+  }
   function signWon(v) { return (v > 0 ? '+' : v < 0 ? '−' : '') + won(Math.abs(v)); }
   /** 톤수 금액 칸 (보기·조정 모드 공용) */
   function adjTd(adj, edit, no, ton, base, cls) {
@@ -642,6 +692,7 @@
   function renderSingleView(r, box, opts) {
     var rows = r.rows.filter(function (row) { return opts.tons.indexOf(row.ton) !== -1; });
     var hold = opts.hold || (opts.hold = {}), adj = adjOf(hold), edit = !!hold.adjEdit;
+    var spN = (r.specials || []).length;
     var showRow = edit || !!adj.rows[1];
     var redraw = function () { renderSingleView(r, box, Object.assign({}, opts, { animate: false })); };
     var onAdj = opts.onAdj || function () { };
@@ -673,15 +724,16 @@
         '<div class="actions">' + adjToolbar(hold, edit) + (opts.recordId ? '<button class="btn btn-sm btn-primary" data-act="saveQuote">견적으로 저장</button>' : '') +
         '<button class="btn btn-sm" data-act="qdoc">견적서</button><button class="btn btn-sm" data-act="copy">회신 문구 복사</button><button class="btn btn-sm" data-act="xlsx">엑셀 저장</button></div></div>' +
         (rows.length ? '<div class="table-wrap"><table class="data qrow' + (edit ? ' adj-editing' : '') + '"><thead><tr>' +
-          '<th>거리</th><th>지역할증</th><th>하행</th>' + rows.map(function (row) { return '<th>' + esc(row.ton) + adjColTag(adj, row.ton) + '</th>'; }).join('') + (showRow ? '<th>행 조정</th>' : '') +
-          '</tr>' + (edit ? '<tr class="adj-head"><th colspan="3" class="adj-lbl">열 조정 →</th>' + adjColInputs(adj, rows.map(function (x) { return x.ton; })) + '<th></th></tr>' : '') + '</thead><tbody><tr>' +
+          '<th>거리</th><th>지역할증</th><th>하행</th>' + (spN ? '<th>특수운임</th>' : '') + rows.map(function (row) { return '<th>' + esc(row.ton) + adjColTag(adj, row.ton) + '</th>'; }).join('') + (showRow ? '<th>행 조정</th>' : '') +
+          '</tr>' + (edit ? '<tr class="adj-head"><th colspan="' + (3 + (spN ? 1 : 0)) + '" class="adj-lbl">열 조정 →</th>' + adjColInputs(adj, rows.map(function (x) { return x.ton; })) + '<th></th></tr>' : '') + '</thead><tbody><tr>' +
           '<td class="num">' + r.distanceKm + '<span class="muted small">km</span></td>' +
           '<td class="num" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
           '<td class="num">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
+          (spN ? '<td class="sp-cell" title="' + esc(specialText(r, opts.tons)) + '">' + esc(specialNames(r)) + '</td>' : '') +
           rows.map(function (row) {
             return adjN(adj) || edit ? adjTd(adj, edit, 1, row.ton, row.total, 'total num') : '<td class="total"><span class="num" data-total="' + row.total + '">' + won(row.total) + '</span></td>';
           }).join('') + (showRow ? adjRowTd(adj, edit, 1) : '') +
-          '</tr></tbody></table></div>' + (edit ? '<p class="hint adj-hint">금액 칸을 고치면 그 칸만 직접 입력값으로 고정돼요 · 열 조정은 그 톤수에, 행 조정은 모든 톤수에 더해져요 (빼려면 -5000)</p>' : '')
+          '</tr></tbody></table></div>' + (spN ? '<p class="hint sp-legend">특수운임 · ' + esc(specialText(r, rows.map(function (x) { return x.ton; }))) + '</p>' : '') + (edit ? '<p class="hint adj-hint">금액 칸을 고치면 그 칸만 직접 입력값으로 고정돼요 · 열 조정은 그 톤수에, 행 조정은 모든 톤수에 더해져요 (빼려면 -5000)</p>' : '')
           : '<p class="muted" style="margin:0">선택된 톤수가 없습니다. ' + esc(opts.emptyHint || '') + '</p>') +
         '<p class="hint" style="margin:14px 0 0">톤수별 금액 = 기본타리프 + 기본타리프 × 하행 + 지역할증 (금액 단위 반올림) · 유류비·통행료는 아래 밀크런에 따로 표시 · 엑셀에는 계산식이 들어갑니다</p>' +
         '</div>';
@@ -784,7 +836,7 @@
       $('#bOrigin').oninput = function () { b.origin = this.value; updateCount(); };
       $('#bDests').oninput = function () { b.dests = this.value; updateCount(); };
     } else {
-      $('#bPairs').oninput = function () { b.pairsText = this.value; updateCount(); };
+      $('#bPairs').oninput = function () { b.pairsText = this.value; b.client = ''; updateCount(); };
     }
     bindOptions(function () { if (b.results.length) renderBulkResult(); });
     ensureAddrList();
@@ -926,7 +978,7 @@
     var box = $('#bulkResult');
     if (!box) return;
     renderBulkView(state.bulk, box, {
-      live: true, animate: animate, tons: state.calc.tons, roundTrip: state.pub.roundTrip, recordId: state.bulk.recordId,
+      live: true, animate: animate, tons: state.calc.tons, roundTrip: state.pub.roundTrip, recordId: state.bulk.recordId, client: state.bulk.client || '',
       emptyHint: '표시할 톤수를 위에서 골라 주세요.'
     });
   }
@@ -951,14 +1003,15 @@
     var mrTon = meta.baseTon || '';
     var adj = adjOf(b), edit = !!b.adjEdit && !b.running, onAdj = opts.onAdj || function () { };
     var showRow = edit || Object.keys(adj.rows).length > 0;
+    var hasSp = all.some(function (x) { return x.result && (x.result.specials || []).length; }), lead = 9 + (hasSp ? 1 : 0);
 
     var head1 = '<tr><th class="sticky c0" rowspan="2">#</th><th class="sticky c1" rowspan="2">하차지</th><th rowspan="2" class="left">상차지</th>' +
-      '<th rowspan="2">거리</th><th rowspan="2">지역할증</th><th rowspan="2">하행</th>' +
+      '<th rowspan="2">거리</th><th rowspan="2">지역할증</th><th rowspan="2">하행</th>' + (hasSp ? '<th rowspan="2">특수운임</th>' : '') +
       '<th colspan="3" class="grp mr">밀크런 · ' + esc(mrTon) + ' ' + (opts.roundTrip ? '왕복' : '편도') + '</th>' +
       tons.map(function (t) { return '<th rowspan="2" class="grp">' + esc(t) + adjColTag(adj, t) + '</th>'; }).join('') + (showRow ? '<th rowspan="2" class="adj-rowc">행 조정</th>' : '') + '</tr>';
     var head2 = '<tr><th class="mr">유류비</th><th class="mr">통행료</th><th class="mr">합계</th></tr>' +
-      (edit ? '<tr class="adj-head"><th colspan="9" class="adj-lbl">열 조정 → 그 톤수 모든 경로에 더하기 (빼려면 -5000)</th>' + adjColInputs(adj, tons) + '<th></th></tr>' : '');
-    var colCount = 9 + tons.length + (showRow ? 1 : 0);
+      (edit ? '<tr class="adj-head"><th colspan="' + lead + '" class="adj-lbl">열 조정 → 그 톤수 모든 경로에 더하기 (빼려면 -5000)</th>' + adjColInputs(adj, tons) + '<th></th></tr>' : '');
+    var colCount = lead + tons.length + (showRow ? 1 : 0);
 
     var body = pageRows.map(function (row) {
       var start = '<td class="sticky c0 muted num">' + row.no + (row.added ? '<div class="added-tag" title="' + esc(row.added.at + ' · ' + row.added.by) + '">추가</div>' : '') + '</td>';
@@ -976,6 +1029,7 @@
         '<td class="num">' + r.distanceKm + '<span class="muted small">km</span></td>' +
         '<td class="num" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
         '<td class="num">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
+        (hasSp ? '<td class="sp-cell small" title="' + esc(specialText(r, tons)) + '">' + ((r.specials || []).length ? esc(specialNames(r)) : '<span class="muted">–</span>') + '</td>' : '') +
         '<td class="num mr">' + won(m.fuel) + '</td><td class="num mr">' + won(m.toll) + '</td><td class="num mr strong">' + won(m.total) + '</td>' +
         tons.map(function (t) {
           var x = byTon[t];
@@ -1019,7 +1073,7 @@
     $$('[data-el="filter"] button', box).forEach(function (x) { x.onclick = function () { b.filter = x.dataset.f; b.page = 0; again(); }; });
     $$('.pager button', box).forEach(function (x) { x.onclick = function () { b.page = Number(x.dataset.p); again(); box.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
     var rt = $('[data-act="retry"]', box); if (rt) rt.onclick = retryFailed;
-    var sv = $('[data-act="saveQuote"]', box); if (sv) sv.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }, adj); };
+    var sv = $('[data-act="saveQuote"]', box); if (sv) sv.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: opts.client || '' }, adj); };
     bindAdjToolbar(box, b, again, onAdj);
     var byNo = {}; all.forEach(function (x) { if (x.result) byNo[x.no] = x.result; });
     bindAdj(box, adj, function (no, ton) { var rr = byNo[no], x = rr && rr.rows.filter(function (y) { return y.ton === ton; })[0]; return x ? x.total : 0; }, function () { onAdj(); again(); });
@@ -2978,6 +3032,7 @@
     ['basic', '기본 설정', 'var(--orange)'],
     ['region', '지역 할증', 'var(--yellow)'],
     ['tariff', '타리프 단가', 'var(--red)'],
+    ['special', '특수 운임', 'var(--orange)'],
     ['users', '계정 관리', 'var(--cyan)'],
     ['andata', '분석 데이터', 'var(--green)'],
     ['anmap', '매출처 설정', 'var(--yellow)'],
@@ -3029,7 +3084,7 @@
 
   function showAdminTab() {
     var a = state.admin, tab = a.tab;
-    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, keys: adminKeys, andata: adminAnData, anmap: adminAnMap, anrule: adminAnRules, diesel: adminDiesel, company: adminCompany };
+    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, keys: adminKeys, andata: adminAnData, anmap: adminAnMap, anrule: adminAnRules, diesel: adminDiesel, company: adminCompany, special: adminSpecials };
     var ready = a.loaded && (tab !== 'tariff' || a.tariff);
     if (ready) {
       views[tab]();
@@ -3635,12 +3690,16 @@
     return loadExcelJS().then(function (EJ) {
       var tons = opts.tons, meta = opts.meta || {}, adj = opts.adj || newAdj();
       var wb = new EJ.Workbook();
-      var HEAD = 4, TS = '기본타리프';
-      var fixed = ['No', '상차지', '하차지', '거리(km)', '요금기준(km)', '지역할증', '하행', '밀크런 유류비', '통행료', '유류비+통행료'];
-      var first = fixed.length; // 톤수 시작 열(0부터)
+      var HEAD = 4, TS = '기본타리프', SS = '특수운임';
+      // 이번 결과에 쓰인 특수운임 (행마다 다를 수 있어 합쳐서 열로)
+      var sps = [], spById = {};
+      items.forEach(function (x) { ((x.result && x.result.specials) || []).forEach(function (sp) { if (!spById[sp.id]) { spById[sp.id] = sp; sps.push(sp); } }); });
+      var C_REGION = 5, C_DOWN = 6, C_SP = 7, C_MR = C_SP + sps.length, first = C_MR + 3;
+      var fixed = ['No', '상차지', '하차지', '거리(km)', '요금기준(km)', '지역할증', '하행'].concat(sps.map(function (sp) { return sp.name + (sp.mode === 'percent' ? ' (%)' : '') + (sp.cust ? ' · ' + sp.cust : ''); }))
+        .concat(['밀크런 유류비', '통행료', '유류비+통행료']);
       var ws = wb.addWorksheet('견적', { views: [{ state: 'frozen', xSplit: 3, ySplit: HEAD }], pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
       var wt = wb.addWorksheet(TS, { views: [{ state: 'frozen', xSplit: 3, ySplit: HEAD }], pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
-      ws.columns = [6, 34, 34, 9, 10, 11, 8, 12, 11, 13].concat(tons.map(function () { return 12; })).concat([11, 36]).map(function (w) { return { width: w }; });
+      ws.columns = [6, 34, 34, 9, 10, 11, 8].concat(sps.map(function () { return 10; })).concat([12, 11, 13]).concat(tons.map(function () { return 12; })).concat([11, 36]).map(function (w) { return { width: w }; });
       wt.columns = [6, 34, 34, 10].concat(tons.map(function () { return 12; })).map(function (w) { return { width: w }; });
       var rowAdjCol = first + tons.length, lastCol = rowAdjCol + 1; // 행 조정 열, 오류 열
       ws.mergeCells(1, 1, 1, lastCol + 1);
@@ -3648,41 +3707,56 @@
       ws.getCell(1, 1).font = { size: 15, bold: true };
       ws.mergeCells(2, 1, 2, lastCol + 1);
       var pr = (state.pub && state.pub.priceRounding) || { unit: 1000, mode: 'round' };
-      ws.getCell(2, 1).value = '톤수 칸 = 기본타리프(' + TS + ' 시트) + 기본타리프 × 하행 + 지역할증 → ' + won(pr.unit) + '원 단위 ' + (pr.mode === 'ceil' ? '올림' : pr.mode === 'floor' ? '내림' : '반올림') +
-        ' + 행 조정 + 열 조정(3행) · 지역할증·하행·조정 칸을 고치면 합계가 다시 계산됩니다 · 노란 칸은 직접 입력한 금액 · ' + (opts.when || today()) + ' ' + (opts.who || state.user.name);
+      ws.getCell(2, 1).value = '톤수 칸 = 기본타리프(' + TS + ' 시트) + 기본타리프 × 하행 + 지역할증' + (sps.length ? ' + 특수운임(1=적용, ' + SS + ' 시트)' : '') + ' → ' + won(pr.unit) + '원 단위 ' + (pr.mode === 'ceil' ? '올림' : pr.mode === 'floor' ? '내림' : '반올림') +
+        ' + 행 조정 + 열 조정(3행) · 칸을 고치면 합계가 다시 계산됩니다 · 노란 칸은 직접 입력한 금액 · ' + (opts.when || today()) + ' ' + (opts.who || state.user.name);
       ws.getCell(2, 1).font = { size: 9.5, color: { argb: XL.muted } };
       wt.getCell(1, 1).value = '기본 타리프 (할증 전 단가 · 견적 시트의 수식이 이 값을 씁니다)';
       wt.getCell(1, 1).font = { size: 13, bold: true };
       var head = fixed.concat(tons).concat(['행 조정', '오류']);
-      // 3행: 열 조정 (톤수 칸 바로 위)
       var lbl = ws.getCell(3, first); lbl.value = '열 조정 →'; lbl.alignment = { horizontal: 'right' }; lbl.font = { bold: true, color: { argb: XL.muted } };
       tons.forEach(function (t, i) { var c = ws.getCell(3, first + i + 1); c.value = adj.cols[t] || 0; c.numFmt = '#,##0;-#,##0;"–"'; c.fill = XL.fill(XL.note); c.border = XL.thin(); c.alignment = { horizontal: 'right' }; });
       head.forEach(function (h, i) {
         var c = ws.getCell(HEAD, i + 1);
-        c.value = h; c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = XL.fill(i >= 7 && i <= 9 ? 'FF2A7D8B' : XL.ink); c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = XL.thin();
+        c.value = h; c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        c.fill = XL.fill(i >= C_MR && i < first ? 'FF2A7D8B' : i >= C_SP && i < C_MR ? 'FF8A5A12' : XL.ink);
+        c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = XL.thin();
       });
       ws.getRow(HEAD).height = 30;
       ['No', '상차지', '하차지', '요금기준(km)'].concat(tons).forEach(function (h, i) {
         var c = wt.getCell(HEAD, i + 1); c.value = h; c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = XL.fill(XL.ink); c.alignment = { horizontal: 'center' }; c.border = XL.thin();
       });
+      // 특수운임 시트: 항목 × 톤수 (금액 또는 %)
+      if (sps.length) {
+        var wsp = wb.addWorksheet(SS);
+        wsp.columns = [18, 10].concat(tons.map(function () { return 11; })).map(function (w) { return { width: w }; });
+        wsp.getCell(1, 1).value = '특수 추가운임 (견적 당시 적용 값 · 금액은 원, %는 기본타리프 대비)'; wsp.getCell(1, 1).font = { size: 13, bold: true };
+        ['항목', '방식'].concat(tons).forEach(function (h, i) { var c = wsp.getCell(HEAD, i + 1); c.value = h; c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = XL.fill(XL.ink); c.alignment = { horizontal: 'center' }; c.border = XL.thin(); });
+        sps.forEach(function (sp, k) {
+          var R = HEAD + 1 + k;
+          wsp.getCell(R, 1).value = sp.name + (sp.cust ? ' (' + sp.cust + ')' : ''); wsp.getCell(R, 2).value = sp.mode === 'percent' ? '%' : '금액';
+          tons.forEach(function (t, i) { var c = wsp.getCell(R, 3 + i); c.value = Number((sp.values || {})[t]) || 0; c.numFmt = sp.mode === 'percent' ? '0.##"%"' : '#,##0'; c.border = XL.thin(); });
+        });
+      }
       items.slice().sort(function (x, y) { return x.no - y.no; }).forEach(function (row, idx) {
         var R = HEAD + 1 + idx;
         var put = function (sheet, col, v, fmt) { var c = sheet.getCell(R, col + 1); c.value = v; if (fmt) c.numFmt = fmt; c.border = XL.thin(); return c; };
         put(ws, 0, row.no); put(wt, 0, row.no);
         if (row.status !== 'ok' || !row.result) {
           put(ws, 1, row.origin); put(ws, 2, row.dest);
-          for (var k = 3; k < lastCol; k++) put(ws, k, '');
+          for (var q = 3; q < lastCol; q++) put(ws, q, '');
           var e = put(ws, lastCol, row.error || '실패'); e.font = { color: { argb: XL.red } };
           put(wt, 1, row.origin); put(wt, 2, row.dest);
           return;
         }
-        var r = row.result, m = r.milkrun, byTon = {};
+        var r = row.result, m = r.milkrun, byTon = {}, mine = {};
         r.rows.forEach(function (x) { byTon[x.ton] = x; });
+        (r.specials || []).forEach(function (sp) { mine[sp.id] = true; });
         put(ws, 1, r.origin.address); put(ws, 2, r.dest.address);
         put(ws, 3, r.distanceKm, '#,##0.0'); put(ws, 4, r.km, '#,##0');
-        put(ws, 5, r.regionTotal, '#,##0');
-        put(ws, 6, r.downhillApplied ? r.downhillPercent / 100 : 0, '0%');
-        [m.fuel, m.toll, m.total].forEach(function (v, i) { var c = put(ws, 7 + i, v, '#,##0'); c.fill = XL.fill(XL.mr); });
+        put(ws, C_REGION, r.regionTotal, '#,##0');
+        put(ws, C_DOWN, r.downhillApplied ? r.downhillPercent / 100 : 0, '0%');
+        sps.forEach(function (sp, k) { var c = put(ws, C_SP + k, mine[sp.id] ? 1 : 0, '0'); c.alignment = { horizontal: 'center' }; c.fill = XL.fill('FFFBEFD9'); });
+        [m.fuel, m.toll, m.total].forEach(function (v, i) { var c = put(ws, C_MR + i, v, '#,##0'); c.fill = XL.fill(XL.mr); });
         put(wt, 1, r.origin.address); put(wt, 2, r.dest.address); put(wt, 3, r.km, '#,##0');
         tons.forEach(function (t, i) {
           var x = byTon[t], col = first + i;
@@ -3692,14 +3766,18 @@
             return;
           }
           put(wt, 4 + i, x.tariff, '#,##0');
-          var T = "'" + TS + "'!" + XL.col(4 + i) + R, H = '$' + XL.col(6) + R, G = '$' + XL.col(5) + R;
+          var T = "'" + TS + "'!" + XL.col(4 + i) + R, H = '$' + XL.col(C_DOWN) + R, G = '$' + XL.col(C_REGION) + R;
+          var spx = sps.map(function (sp, k) {
+            var V = "'" + SS + "'!$" + XL.col(2 + i) + '$' + (HEAD + 1 + k), F = '$' + XL.col(C_SP + k) + R;
+            return '+' + F + '*' + (sp.mode === 'percent' ? 'ROUND(' + T + '*' + V + '/100,0)' : V);
+          }).join('');
           var k = row.no + '|' + t;
           if (adj.cells.hasOwnProperty(k)) {
             var fc = put(ws, col, adj.cells[k], '#,##0');
             fc.font = { bold: true }; fc.fill = XL.fill('FFFFE08A'); fc.note = '직접 입력한 금액 (계산값 ' + won(adjCalc(adj, row.no, t, x.total)) + ')';
             return;
           }
-          var c = put(ws, col, { formula: xlRoundFormula(T + '+ROUND(' + T + '*' + H + ',0)+' + G) + '+$' + XL.col(rowAdjCol) + R + '+' + XL.col(col) + '$3', result: adjPrice(adj, row.no, t, x.total) }, '#,##0');
+          var c = put(ws, col, { formula: xlRoundFormula(T + '+ROUND(' + T + '*' + H + ',0)+' + G + spx) + '+$' + XL.col(rowAdjCol) + R + '+' + XL.col(col) + '$3', result: adjPrice(adj, row.no, t, x.total) }, '#,##0');
           c.font = { bold: true };
         });
         var ra = put(ws, rowAdjCol, adj.rows[row.no] || 0, '#,##0;-#,##0;"–"'); ra.fill = XL.fill(XL.note);
@@ -3710,7 +3788,8 @@
       var ok = items.filter(function (x) { return x.status === 'ok'; }).length;
       [['조회 일시', opts.when || new Date().toLocaleString('ko-KR')], ['조회자', opts.who || (state.user.name + ' (' + state.user.id + ')')], ['전체 건수', items.length], ['성공', ok], ['실패', items.length - ok],
         ['밀크런 기준 톤수', meta.baseTon || ''], ['편도/왕복', opts.roundTrip ? '왕복' : '편도'], ['경유가(원/L)', meta.diesel ? meta.diesel.price : ''], ['경유가 출처', meta.diesel ? meta.diesel.source || '' : ''],
-        ['계산식', '톤수별 합계 = 기본타리프 + 기본타리프 × 하행% + 지역할증 (금액 단위 ' + won(pr.unit) + '원)'], ['참고', '유류비·통행료는 밀크런 기준 톤수로 따로 계산하며 톤수별 합계에는 들어가지 않습니다.']
+        ['특수 추가운임', sps.length ? sps.map(function (sp) { return sp.name + (sp.cust ? '(' + sp.cust + ' 기준)' : ''); }).join(', ') : '없음'],
+        ['계산식', '톤수별 합계 = 기본타리프 + 기본타리프 × 하행% + 지역할증 + 특수운임 (금액 단위 ' + won(pr.unit) + '원) + 행·열 조정'], ['참고', '유류비·통행료는 밀크런 기준 톤수로 따로 계산하며 톤수별 합계에는 들어가지 않습니다.']
       ].forEach(function (r, i) { cs.getCell(i + 1, 1).value = r[0]; cs.getCell(i + 1, 1).font = { bold: true }; cs.getCell(i + 1, 2).value = r[1]; });
       return saveWorkbook(wb, opts.fileName);
     }).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
@@ -3934,6 +4013,364 @@
         fileName: '견적서_' + (o.to || coName).replace(/[\\/:*?"<>|]/g, '_') + '_' + o.date + '.xlsx'
       });
     };
+  }
+
+  /* ───────── 특수 추가운임 (관리자) ───────── */
+
+  function specialsGrid(items, tons) {
+    return [['항목', '방식(금액/%)'].concat(tons)].concat(items.map(function (sp) {
+      return [sp.name, sp.mode === 'percent' ? '%' : '금액'].concat(tons.map(function (t) { var v = (sp.values || {})[t]; return v ? Number(v) : ''; }));
+    }));
+  }
+  /** 엑셀 시트 → [{ name, mode, values }] (제목 줄에 "항목"이 있는 표) */
+  function parseSpecialsGrid(grid, tons) {
+    var hi = -1;
+    for (var i = 0; i < Math.min(grid.length, 20); i++) if (grid[i].some(function (c) { return String(c).replace(/\s/g, '') === '항목'; })) { hi = i; break; }
+    if (hi === -1) return null;
+    var h = grid[hi].map(function (c) { return String(c).replace(/\s/g, ''); });
+    var ci = h.indexOf('항목'), mi = h.findIndex(function (c) { return /^방식/.test(c); });
+    var tcol = {};
+    tons.forEach(function (t) { var k = h.findIndex(function (c) { return normTon(c) === t; }); if (k !== -1) tcol[t] = k; });
+    return grid.slice(hi + 1).filter(function (r) { return String(r[ci] || '').trim(); }).map(function (r) {
+      var values = {};
+      tons.forEach(function (t) { if (tcol[t] == null) return; var v = anNum(r[tcol[t]]); if (v > 0) values[t] = v; });
+      return { name: String(r[ci]).trim(), mode: /%|퍼센트|percent/i.test(String(mi !== -1 ? r[mi] : '')) ? 'percent' : 'amount', values: values };
+    });
+  }
+  /** "5T", "5", "5톤 윙" → 설정의 "5톤" */
+  function normTon(v) {
+    var tons = state.pub.tons, s = String(v == null ? '' : v).trim();
+    if (tons.indexOf(s) !== -1) return s;
+    var m = s.replace(/,/g, '').match(/\d+(\.\d+)?/);
+    if (!m) return null;
+    var n = parseFloat(m[0]);
+    return tons.filter(function (t) { return parseFloat(t) === n; })[0] || null;
+  }
+
+  function adminSpecials() {
+    var a = state.admin, st = a.settings, tons = st.tons.map(function (t) { return t.name; });
+    st.specials = st.specials || [];
+    var body = $('#adminBody');
+    body.innerHTML = '<div class="card"><div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:12px"><div><div class="eyebrow">Special · 특수 추가운임</div><h2>회사 기준 특수운임</h2>' +
+      '<p class="muted small" style="margin:6px 0 0">계산할 때 고르면 톤수별로 더해져요. <b>금액</b>은 원, <b>%</b>는 기본 타리프 대비입니다. 금액을 하나도 넣지 않은 항목은 계산 화면에 나오지 않아요. 업체마다 다른 값은 <b>업체 단가 → 특수운임 설정</b>에서 정해요.</p></div>' +
+      '<div class="actions"><button class="btn btn-sm" id="spTpl">엑셀 양식 내려받기</button><label class="btn btn-sm" for="spFile">엑셀 올리기</label><input type="file" id="spFile" accept=".xlsx,.xls,.csv" hidden></div></div>' +
+      '<div class="table-wrap"><table class="data sp-table"><thead><tr><th class="left">항목</th><th>방식</th>' + tons.map(function (t) { return '<th>' + esc(t) + '</th>'; }).join('') + '<th></th></tr></thead><tbody>' +
+      st.specials.map(function (sp, i) {
+        return '<tr data-i="' + i + '"><td><input class="input input-sm" data-f="name" value="' + esc(sp.name) + '" maxlength="30"></td>' +
+          '<td><select class="input input-sm" data-f="mode"><option value="amount"' + (sp.mode !== 'percent' ? ' selected' : '') + '>금액</option><option value="percent"' + (sp.mode === 'percent' ? ' selected' : '') + '>%</option></select></td>' +
+          tons.map(function (t) { var v = (sp.values || {})[t]; return '<td><input class="input input-sm num sp-v" data-t="' + esc(t) + '" value="' + (v ? (sp.mode === 'percent' ? v : won(v)) : '') + '" placeholder="–" inputmode="decimal"></td>'; }).join('') +
+          '<td><button class="btn btn-sm btn-ghost" data-del>삭제</button></td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<button class="btn btn-sm" id="spAdd" style="margin-top:10px">＋ 항목 추가</button>' +
+      saveBar(a.settingsDirty, '특수운임 저장') + '</div>';
+    var mark = function () { a.settingsDirty = true; var d = $('.save-bar .small'); if (d) d.innerHTML = '<span class="dirty-dot"></span>저장하지 않은 변경사항'; };
+    $$('.sp-table tbody tr', body).forEach(function (tr) {
+      var sp = st.specials[Number(tr.dataset.i)];
+      $('[data-f="name"]', tr).oninput = function () { sp.name = this.value; mark(); };
+      $('[data-f="mode"]', tr).onchange = function () { sp.mode = this.value; mark(); };
+      $$('.sp-v', tr).forEach(function (inp) {
+        inp.onchange = function () { var v = anNum(inp.value); sp.values = sp.values || {}; if (v > 0) sp.values[inp.dataset.t] = v; else delete sp.values[inp.dataset.t]; inp.value = v > 0 ? (sp.mode === 'percent' ? v : won(v)) : ''; mark(); };
+      });
+      $('[data-del]', tr).onclick = function () { if (!confirm('"' + sp.name + '" 항목을 지울까요? (저장해야 반영돼요)')) return; st.specials.splice(Number(tr.dataset.i), 1); mark(); adminSpecials(); };
+    });
+    $('#spAdd').onclick = function () { st.specials.push({ id: 'sp' + Date.now().toString(36), name: '새 항목', mode: 'amount', values: {} }); mark(); adminSpecials(); };
+    $('#saveBtn').onclick = function () { saveSettings(this); };
+    $('#spTpl').onclick = function () {
+      var btn = this; busy(btn, true, '…');
+      downloadXlsx('JOIL_특수운임_' + today() + '.xlsx', [{ name: '특수운임', rows: specialsGrid(st.specials, tons), widths: [16, 12].concat(tons.map(function () { return 10; })) },
+        { name: '안내', rows: [['특수 추가운임 양식'], ['방식: 금액(원) 또는 % (기본 타리프 대비)'], ['빈칸은 0원(해당 없음)으로 처리됩니다.'], ['항목 이름이 같으면 그 항목을 고치고, 새 이름은 새 항목으로 추가돼요.']], widths: [70] }])
+        .catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+    };
+    $('#spFile').onchange = function () {
+      var file = this.files[0]; this.value = ''; if (!file) return;
+      Promise.all([loadXlsx(), file.arrayBuffer()]).then(function (res) {
+        var X = res[0], wb = X.read(new Uint8Array(res[1]), { type: 'array' });
+        var name = wb.SheetNames.filter(function (n) { return /특수/.test(n); })[0] || wb.SheetNames[0];
+        var list = parseSpecialsGrid(X.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' }), tons);
+        if (!list || !list.length) throw new Error('"항목" 제목 줄이 있는 표를 찾지 못했어요. 양식을 내려받아 써 주세요.');
+        list.forEach(function (n) {
+          var ex = st.specials.filter(function (sp) { return sp.name === n.name; })[0];
+          if (ex) { ex.mode = n.mode; ex.values = n.values; } else st.specials.push({ id: 'sp' + Date.now().toString(36) + st.specials.length, name: n.name, mode: n.mode, values: n.values });
+        });
+        mark(); adminSpecials(); toast(list.length + '개 항목을 읽었어요. 확인 후 저장을 누르세요.');
+      }).catch(function (err) { toast(err.message, 'err'); });
+    };
+  }
+
+  /* ───────── 업체별 단가표 ───────── */
+
+  function ratesTemplate(btn, cust) {
+    var tons = state.pub.tons, items = (state.pub.specials || []).map(function (sp) { return { name: sp.name, mode: sp.mode, values: {} }; });
+    busy(btn, true, '…');
+    downloadXlsx('JOIL_업체단가_양식' + (cust ? '_' + cust : '') + '.xlsx', [
+      { name: '단가표', widths: [36, 36, 9, 12, 13, 24], rows: [['상차지', '하차지', '톤수', '단가', '적용 시작일', '비고'],
+        ['경기 평택시 포승읍 평택항로 100', '부산 강서구 녹산산단321로 10', '5톤', 500000, '2026-01-01', '← 예시 줄 (지우고 쓰세요)'],
+        ['경기 평택시 포승읍 평택항로 100', '대구 달서구 성서공단로 1', '11톤', 700000, '', '']] },
+      { name: '특수운임', widths: [16, 12].concat(tons.map(function () { return 10; })), rows: specialsGrid(items, tons) },
+      { name: '안내', widths: [90], rows: [['업체 단가표 올리기 양식'], [''], ['[단가표] 한 줄에 하나: 상차지 · 하차지 · 톤수 · 단가 (적용 시작일, 비고는 선택)'],
+        ['톤수는 ' + tons.join(', ') + ' 중 하나로 써 주세요. (5T, 5 처럼 써도 알아봐요)'], ['단가는 숫자만 (원). 적용 시작일은 2026-01-01 형식.'], [''],
+        ['[특수운임] 이 업체만 회사 기준과 다른 특수운임이 있을 때만 채우세요. 빈 항목은 회사 기준을 씁니다.'], ['방식: 금액(원) 또는 % (기본 타리프 대비)']] }
+    ]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+  }
+
+  /** 단가표 엑셀 읽기 → { rows, bad, specials } */
+  function parseRatesFile(file) {
+    return Promise.all([loadXlsx(), file.arrayBuffer()]).then(function (res) {
+      var X = res[0], wb = X.read(new Uint8Array(res[1]), { type: 'array', cellDates: true });
+      var sheet = wb.SheetNames.filter(function (n) { return /단가/.test(n); })[0] || wb.SheetNames[0];
+      var grid = X.utils.sheet_to_json(wb.Sheets[sheet], { header: 1, raw: true, defval: '' });
+      var hi = -1, col = {};
+      for (var i = 0; i < Math.min(grid.length, 30) && hi === -1; i++) {
+        var h = grid[i].map(function (c) { return String(c).replace(/\s/g, ''); });
+        var f = h.findIndex(function (c) { return /^(상차지|출발지|발지)/.test(c); }), t = h.findIndex(function (c) { return /^(하차지|도착지|착지)/.test(c); });
+        if (f !== -1 && t !== -1) {
+          hi = i; col = { from: f, to: t, ton: h.findIndex(function (c) { return /톤|차종|차량/.test(c); }), price: h.findIndex(function (c) { return /단가|운임|금액/.test(c); }),
+            since: h.findIndex(function (c) { return /시작|적용일|일자/.test(c); }), memo: h.findIndex(function (c) { return /비고|메모/.test(c); }) };
+        }
+      }
+      if (hi === -1) throw new Error('"상차지 · 하차지" 제목 줄을 찾지 못했어요. 양식을 내려받아 써 주세요.');
+      if (col.ton === -1 || col.price === -1) throw new Error('"톤수", "단가" 열을 찾지 못했어요.');
+      var rows = [], bad = [];
+      grid.slice(hi + 1).forEach(function (r, k) {
+        var from = String(r[col.from] || '').trim(), to = String(r[col.to] || '').trim();
+        if (!from && !to) return;
+        if (/예시/.test(String(col.memo !== -1 ? r[col.memo] : ''))) return;
+        var ton = normTon(r[col.ton]), price = anNum(r[col.price]), since = col.since !== -1 ? anDate(r[col.since], X) || '' : '';
+        var line = hi + k + 2;
+        if (!from || !to) bad.push(line + '행: 상차지·하차지 빈칸');
+        else if (!ton) bad.push(line + '행: 톤수 "' + r[col.ton] + '"를 알 수 없음');
+        else if (!(price > 0)) bad.push(line + '행: 단가 확인');
+        else rows.push([from, to, ton, Math.round(price), since, col.memo !== -1 ? String(r[col.memo] || '') : '']);
+      });
+      var specials = null, spName = wb.SheetNames.filter(function (n) { return /특수/.test(n); })[0];
+      if (spName) {
+        var list = parseSpecialsGrid(X.utils.sheet_to_json(wb.Sheets[spName], { header: 1, raw: true, defval: '' }), state.pub.tons) || [];
+        list = list.filter(function (x) { return Object.keys(x.values).length; });
+        if (list.length) {
+          specials = {};
+          list.forEach(function (x) { var sp = (state.pub.specials || []).filter(function (s) { return s.name === x.name; })[0]; if (sp) specials[sp.id] = { mode: x.mode, values: x.values }; else bad.push('특수운임 "' + x.name + '"은 회사 항목에 없어 건너뜀'); });
+        }
+      }
+      return { rows: rows, bad: bad, specials: specials };
+    });
+  }
+
+  function renderRates() {
+    var rs = state.rates;
+    $('#main').innerHTML = '<div class="rates-grid"><div class="card rates-side"><div class="eyebrow">Rates · 업체 단가</div><h2>업체별 단가표</h2>' +
+      '<div class="actions" style="margin:12px 0"><button class="btn btn-sm btn-primary" id="rtUp">＋ 단가표 올리기</button><button class="btn btn-sm" id="rtTpl">양식 내려받기</button></div>' +
+      '<input class="input input-sm" id="rtQ" placeholder="업체 찾기" value="' + esc(rs.custQ || '') + '"><div id="rtList" style="margin-top:10px"><p class="muted"><span class="spinner dark"></span></p></div></div>' +
+      '<div id="rtBody"></div></div>';
+    $('#rtUp').onclick = function () { openRatesUpload(rs.sel || ''); };
+    $('#rtTpl').onclick = function () { ratesTemplate(this, ''); };
+    $('#rtQ').oninput = function () { rs.custQ = this.value.trim(); drawRateList(); };
+    if (rs.custs) { drawRateList(); drawRateBody(); return; }
+    api('rates.list').then(function (r) { rs.custs = r.custs; state.rateCusts = r.custs; if (!rs.sel && r.custs.length) rs.sel = r.custs[0].cust; if (state.view === 'rates') { drawRateList(); drawRateBody(); } })
+      .catch(function (err) { $('#rtList').innerHTML = '<p class="err-text">' + esc(err.message) + '</p>'; });
+  }
+
+  function drawRateList() {
+    var rs = state.rates, el = $('#rtList'); if (!el || !rs.custs) return;
+    var list = rs.custs.filter(function (x) { return !rs.custQ || x.cust.indexOf(rs.custQ) !== -1; });
+    el.innerHTML = list.length ? '<ul class="rt-list">' + list.map(function (x) {
+      return '<li><button class="' + (rs.sel === x.cust ? 'on' : '') + '" data-c="' + esc(x.cust) + '"><b>' + esc(x.cust) + '</b><span class="small muted">' + won(x.count) + '구간' + (x.hasSpecial ? ' · 특수운임 별도' : '') + '</span></button></li>';
+    }).join('') + '</ul>' : '<p class="muted small">' + (rs.custs.length ? '찾는 업체가 없어요.' : '아직 올린 단가표가 없어요. 양식을 내려받아 채운 뒤 올려 주세요.') + '</p>';
+    $$('[data-c]', el).forEach(function (b) { b.onclick = function () { rs.sel = b.dataset.c; rs.data = null; rs.cmp = null; rs.q = ''; rs.ton = ''; drawRateList(); drawRateBody(); }; });
+  }
+
+  function drawRateBody() {
+    var rs = state.rates, box = $('#rtBody'); if (!box) return;
+    if (!rs.sel) { box.innerHTML = '<div class="card empty"><div><div class="big-stripes"></div><h3>업체를 고르거나 단가표를 올려 주세요</h3><p class="muted" style="margin:0">올린 단가는 우리 타리프와 비교하거나, 그 구간 그대로 새 견적을 낼 수 있어요.</p></div></div>'; return; }
+    if (!rs.data || rs.data.cust !== rs.sel) {
+      box.innerHTML = '<div class="card muted"><span class="spinner dark"></span> 불러오는 중…</div>';
+      var want = rs.sel;
+      api('rates.get', { cust: want }).then(function (r) { if (rs.sel !== want) return; rs.data = r; drawRateBody(); }).catch(function (err) { box.innerHTML = '<div class="card"><p class="err-text" style="margin:0">' + esc(err.message) + '</p></div>'; });
+      return;
+    }
+    var d = rs.data, cmp = rs.cmp, q = rs.q || '';
+    var tonsUsed = state.pub.tons.filter(function (t) { return d.rows.some(function (r) { return r[2] === t; }); });
+    var list = d.rows.map(function (r, i) { return { i: i, r: r }; }).filter(function (x) { return (!rs.ton || x.r[2] === rs.ton) && (!q || (x.r[0] + ' ' + x.r[1] + ' ' + x.r[5]).indexOf(q) !== -1); });
+    var info = (rs.custs || []).filter(function (x) { return x.cust === d.cust; })[0] || {};
+    var sum = '';
+    if (cmp && cmp.done) {
+      var diffs = d.rows.map(function (r, i) { var ours = cmp.ours[i]; return ours ? (r[3] - ours) / ours * 100 : null; }).filter(function (v) { return v != null; });
+      var avg = diffs.length ? diffs.reduce(function (s, v) { return s + v; }, 0) / diffs.length : null;
+      var below = diffs.filter(function (v) { return v < 0; }).length;
+      sum = '<div class="kpis mini rt-kpis">' +
+        '<div class="kpi"><div class="k">비교한 구간</div><div class="v num">' + won(diffs.length) + '</div><div class="s">' + (cmp.failed ? '계산 실패 ' + cmp.failed + '구간' : '전부 계산됨') + '</div></div>' +
+        '<div class="kpi"><div class="k">평균 차이 (계약 − 우리 타리프)</div><div class="v num' + (avg < 0 ? ' neg' : '') + '">' + (avg == null ? '–' : (avg > 0 ? '+' : '') + avg.toFixed(1) + '%') + '</div><div class="s">+면 계약 단가가 더 높음</div></div>' +
+        '<div class="kpi"><div class="k">계약 단가가 더 낮은 구간</div><div class="v num' + (below ? ' neg' : '') + '">' + won(below) + '</div><div class="s">단가 인상 검토 대상</div></div></div>';
+    }
+    box.innerHTML = '<div class="card"><div class="row-between" style="flex-wrap:wrap;gap:10px"><div><div class="eyebrow">Rate card · 단가표</div><h2>' + esc(d.cust) + '</h2>' +
+      '<p class="muted small" style="margin:4px 0 0">' + won(d.rows.length) + '구간' + (info.updated ? ' · 마지막 올림 ' + esc(info.updated) + ' ' + esc(String(info.by || '').replace(/ \(.*\)$/, '')) : '') + (Object.keys(d.specials || {}).length ? ' · 특수운임 ' + Object.keys(d.specials).length + '개 업체 기준' : '') + '</p></div>' +
+      '<div class="actions"><button class="btn btn-sm btn-primary" id="rtCmp"' + (cmp && !cmp.done ? ' disabled' : '') + '>' + (cmp && !cmp.done ? '<span class="spinner"></span>비교 중 ' + cmp.n + '/' + cmp.total : '우리 타리프로 비교') + '</button>' +
+      '<button class="btn btn-sm" id="rtNew">이 구간으로 새 견적</button><button class="btn btn-sm" id="rtSp">특수운임 설정</button><button class="btn btn-sm" id="rtRe">다시 올리기</button>' +
+      '<button class="btn btn-sm" id="rtX">엑셀</button>' + (state.user.role === 'admin' ? '<button class="btn btn-sm btn-ghost" id="rtDel">업체 삭제</button>' : '') + '</div></div>' + sum +
+      '<div class="toolbar" style="margin-top:12px"><input class="input input-sm" id="rtSearch" placeholder="상차지·하차지 검색" value="' + esc(q) + '" style="max-width:260px">' +
+      '<div class="segmented" id="rtTon"><button type="button" data-t="" class="' + (!rs.ton ? 'on' : '') + '">전체</button>' + tonsUsed.map(function (t) { return '<button type="button" data-t="' + esc(t) + '" class="' + (rs.ton === t ? 'on' : '') + '">' + esc(t) + '</button>'; }).join('') + '</div></div>' +
+      '<div class="table-wrap"><table class="data rt-table"><thead><tr><th class="left">상차지</th><th class="left">하차지</th><th>톤수</th><th>계약 단가</th>' + (cmp ? '<th>우리 타리프</th><th>차이</th><th>차이율</th>' : '') + '<th class="left">적용일</th><th class="left">비고</th></tr></thead><tbody>' +
+      list.slice(0, rs.limit || 300).map(function (x) {
+        var r = x.r, ours = cmp && cmp.ours[x.i], err = cmp && cmp.errs[x.i];
+        var df = ours != null ? r[3] - ours : null;
+        return '<tr><td class="left wrap">' + esc(r[0]) + '</td><td class="left wrap">' + esc(r[1]) + '</td><td>' + esc(r[2]) + '</td><td class="num strong">' + won(r[3]) + '</td>' +
+          (cmp ? (ours != null ? '<td class="num">' + won(ours) + '</td><td class="num ' + (df < 0 ? 'neg' : '') + '">' + (df > 0 ? '+' : '') + won(df) + '</td><td class="num ' + (df < 0 ? 'neg' : '') + '">' + (df > 0 ? '+' : '') + (df / ours * 100).toFixed(1) + '%</td>'
+            : '<td colspan="3" class="muted small">' + (err ? esc(err) : cmp.done ? '–' : '…') + '</td>') : '') +
+          '<td class="left small">' + esc(r[4] || '') + '</td><td class="left small muted">' + esc(r[5] || '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      (list.length > (rs.limit || 300) ? '<button class="btn btn-sm" id="rtMore" style="margin-top:10px">더 보기 (' + won(list.length - (rs.limit || 300)) + '구간)</button>' : '') +
+      (cmp ? '<p class="hint" style="margin:10px 0 0">우리 타리프 = 지금 단가 기준 톤수별 금액 (지역·하행 할증 포함' + (Object.keys(d.specials || {}).length ? ', 특수운임 제외' : '') + '). 차이 = 계약 단가 − 우리 타리프.</p>' : '') + '</div>';
+    var st;
+    $('#rtSearch').oninput = function () { var v = this.value; clearTimeout(st); st = setTimeout(function () { rs.q = v.trim(); drawRateBody(); var el = $('#rtSearch'); el.focus(); el.setSelectionRange(v.length, v.length); }, 250); };
+    $$('#rtTon button').forEach(function (b) { b.onclick = function () { rs.ton = b.dataset.t; drawRateBody(); }; });
+    var more = $('#rtMore'); if (more) more.onclick = function () { rs.limit = (rs.limit || 300) + 300; drawRateBody(); };
+    $('#rtCmp').onclick = function () { compareRates(); };
+    $('#rtNew').onclick = function () { ratesToQuote(d); };
+    $('#rtSp').onclick = function () { openCustSpecials(d); };
+    $('#rtRe').onclick = function () { openRatesUpload(d.cust); };
+    $('#rtX').onclick = function () {
+      var btn = this; busy(btn, true, '…');
+      downloadXlsx('JOIL_업체단가_' + d.cust + '_' + today() + '.xlsx', [{ name: '단가표', widths: [36, 36, 8, 12].concat(cmp ? [12, 12, 9] : []).concat([12, 24]),
+        rows: [['상차지', '하차지', '톤수', '계약 단가'].concat(cmp ? ['우리 타리프', '차이', '차이율(%)'] : []).concat(['적용 시작일', '비고'])].concat(d.rows.map(function (r, i) {
+          var ours = cmp && cmp.ours[i];
+          return [r[0], r[1], r[2], r[3]].concat(cmp ? [ours == null ? '' : ours, ours == null ? '' : r[3] - ours, ours == null ? '' : +((r[3] - ours) / ours * 100).toFixed(1)] : []).concat([r[4], r[5]]);
+        })) }]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+    };
+    var del = $('#rtDel'); if (del) del.onclick = function () {
+      if (!confirm('"' + d.cust + '" 업체의 단가표와 특수운임 설정을 모두 지울까요? 되돌릴 수 없습니다.')) return;
+      var btn = this; busy(btn, true, '삭제 중…');
+      api('rates.delete', { cust: d.cust }).then(function () { rs.custs = null; rs.sel = ''; rs.data = null; rs.cmp = null; state.rateCusts = null; toast('삭제했습니다.'); renderRates(); })
+        .catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+    };
+  }
+
+  /** 단가표 구간을 지금 타리프로 계산해서 비교 (조회기록에는 남기지 않음) */
+  function compareRates() {
+    var rs = state.rates, d = rs.data;
+    var uniq = {}, pairs = [];
+    d.rows.forEach(function (r) { var k = r[0] + '\u0001' + r[1]; if (!uniq[k]) { uniq[k] = pairs.length + 1; pairs.push({ no: pairs.length + 1, origin: r[0], dest: r[1] }); } });
+    var cmp = rs.cmp = { ours: {}, errs: {}, n: 0, total: pairs.length, done: false, failed: 0 };
+    var results = {};
+    var chunks = [];
+    for (var i = 0; i < pairs.length; i += BULK_CHUNK) chunks.push(pairs.slice(i, i + BULK_CHUNK));
+    var next = 0, cust = d.cust;
+    drawRateBody();
+    var opts = { dieselMode: state.calc.dieselMode, dieselPrice: Number(state.calc.dieselPrice), baseTon: state.calc.baseTon };
+    var worker = function () {
+      if (next >= chunks.length || rs.cmp !== cmp) return Promise.resolve();
+      var ch = chunks[next++];
+      return api('quoteBatch', Object.assign({ pairs: ch, batch: { count: pairs.length } }, opts)).then(function (res) {
+        res.items.forEach(function (it, j) { results[ch[j].no] = it; });
+      }).catch(function (err) { ch.forEach(function (p) { results[p.no] = { error: err.message }; }); }).then(function () {
+        cmp.n += ch.length;
+        if (state.view === 'rates' && rs.data && rs.data.cust === cust) { var b = $('#rtCmp'); if (b) b.innerHTML = '<span class="spinner"></span>비교 중 ' + cmp.n + '/' + cmp.total; }
+        return worker();
+      });
+    };
+    Promise.all([worker(), worker(), worker()]).then(function () {
+      if (rs.cmp !== cmp) return;
+      d.rows.forEach(function (r, i) {
+        var it = results[uniq[r[0] + '\u0001' + r[1]]];
+        if (!it || it.error) { cmp.errs[i] = (it && it.error) || '계산 실패'; cmp.failed++; return; }
+        if (it.result.overMax) { cmp.errs[i] = '타리프 범위 초과 (별도 문의)'; return; }
+        var x = it.result.rows.filter(function (y) { return y.ton === r[2]; })[0];
+        if (x && x.total != null) cmp.ours[i] = x.total; else cmp.errs[i] = '해당 톤수 단가 없음';
+      });
+      cmp.done = true;
+      if (state.view === 'rates' && rs.data && rs.data.cust === cust) drawRateBody();
+    });
+  }
+
+  /** 단가표 구간 → 대량 계산 화면으로 옮겨서 바로 계산 (업체 특수운임 기준 선택) */
+  function ratesToQuote(d) {
+    var b = state.bulk;
+    if (b.running) return toast('대량 계산이 진행 중입니다. 끝난 뒤 다시 시도하세요.', 'err');
+    var seen = {}, lines = [];
+    d.rows.forEach(function (r) { var k = r[0] + '\t' + r[1]; if (!seen[k]) { seen[k] = true; lines.push(k); } });
+    if (lines.length > (Number(state.pub.maxRows) || 1000)) return toast('구간이 너무 많아요. 최대 ' + won(state.pub.maxRows) + '건까지 계산할 수 있어요.', 'err');
+    var tons = state.pub.tons.filter(function (t) { return d.rows.some(function (r) { return r[2] === t; }); });
+    if (tons.length) { state.calc.tons = tons; local('set', 'joil-tons', tons); }
+    if (Object.keys(d.specials || {}).length) state.calc.cust = d.cust;
+    b.mode = 'pairs'; b.pairsText = lines.join('\n'); b.results = []; b.client = d.cust;
+    state.view = 'bulk'; render();
+    toast(d.cust + ' 단가표의 ' + lines.length + '개 구간을 계산해요. 결과에서 금액 조정·견적 저장을 할 수 있어요.');
+    startBulk();
+  }
+
+  function openRatesUpload(cust) {
+    var parsed = null, file = null;
+    modal({
+      eyebrow: '업체 단가', title: '단가표 올리기',
+      body: '<div class="field"><label>업체 <span style="color:var(--red)">*</span></label><input class="input" id="ruC" list="ruCs" value="' + esc(cust || '') + '" placeholder="예) 쿠팡"><datalist id="ruCs">' + (state.rates.custs || []).map(function (x) { return '<option value="' + esc(x.cust) + '">'; }).join('') + '</datalist></div>' +
+        '<label class="drop" id="ruDrop"><input type="file" id="ruF" accept=".xlsx,.xls,.csv" hidden><span id="ruTxt"><b>엑셀 파일 고르기</b> 또는 끌어다 놓기<br><span class="small muted">양식의 "단가표" 시트 (특수운임 시트는 선택)</span></span></label>' +
+        '<div class="field"><label>올리는 방식</label><div class="segmented" id="ruM"><button type="button" data-m="replace" class="on">바꾸기 (이 업체 단가 전체 교체)</button><button type="button" data-m="append">뒤에 추가</button></div></div>' +
+        '<div id="ruInfo"></div>',
+      foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="ruGo" disabled>올리기</button>',
+      onMount: function (m, close) {
+        $$('#ruM button', m).forEach(function (b) { b.onclick = function () { $$('#ruM button', m).forEach(function (x) { x.classList.toggle('on', x === b); }); }; });
+        var pick = function (f) {
+          if (!f) return; file = f;
+          $('#ruTxt', m).innerHTML = '<b>' + esc(f.name) + '</b><br><span class="small muted">읽는 중…</span>';
+          parseRatesFile(f).then(function (p) {
+            parsed = p;
+            $('#ruTxt', m).innerHTML = '<b>' + esc(f.name) + '</b><br><span class="small muted">다른 파일을 고르려면 다시 누르세요</span>';
+            $('#ruInfo', m).innerHTML = '<p style="margin:0"><b>' + won(p.rows.length) + '구간</b> 읽음' + (p.specials ? ' · 업체 특수운임 ' + Object.keys(p.specials).length + '개' : '') + '</p>' +
+              (p.bad.length ? '<div class="notice err-notice" style="margin-top:8px">건너뛴 줄 ' + p.bad.length + '개<br>' + p.bad.slice(0, 8).map(esc).join('<br>') + (p.bad.length > 8 ? '<br>…' : '') + '</div>' : '');
+            $('#ruGo', m).disabled = !p.rows.length;
+          }).catch(function (err) { parsed = null; $('#ruGo', m).disabled = true; $('#ruInfo', m).innerHTML = '<p class="err-text" style="margin:0">' + esc(err.message) + '</p>'; });
+        };
+        $('#ruF', m).onchange = function () { pick(this.files[0]); this.value = ''; };
+        var dz = $('#ruDrop', m);
+        dz.ondragover = function (e) { e.preventDefault(); dz.classList.add('over'); };
+        dz.ondragleave = function () { dz.classList.remove('over'); };
+        dz.ondrop = function (e) { e.preventDefault(); dz.classList.remove('over'); pick(e.dataTransfer.files[0]); };
+        $('#ruGo', m).onclick = function () {
+          var c = $('#ruC', m).value.trim(), mode = $('#ruM button.on', m).dataset.m;
+          if (!c) return toast('업체 이름을 입력하세요.', 'err');
+          if (!parsed) return;
+          if (mode === 'replace' && (state.rates.custs || []).some(function (x) { return x.cust === c && x.count; }) && !confirm('"' + c + '"의 기존 단가를 모두 이 파일로 바꿀까요?')) return;
+          var btn = this; busy(btn, true, '올리는 중…');
+          api('rates.upload', { cust: c, rows: parsed.rows, mode: mode, specials: parsed.specials || undefined }).then(function (r) {
+            close(); toast(c + ' 단가 ' + won(r.count) + '구간을 올렸어요.');
+            var rs = state.rates; rs.custs = null; rs.sel = c; rs.data = null; rs.cmp = null; state.rateCusts = null;
+            if (state.view === 'rates') renderRates();
+          }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+        };
+      }
+    });
+  }
+
+  /** 업체 특수운임: 회사 기준과 다른 항목만 */
+  function openCustSpecials(d) {
+    var tons = state.pub.tons, items = state.pub.specials || [], cur = JSON.parse(JSON.stringify(d.specials || {}));
+    modal({
+      wide: true, eyebrow: '업체 단가 · ' + d.cust, title: '업체 특수운임',
+      body: '<p class="muted small" style="margin:0 0 12px">이 업체만 회사 기준과 다르게 받는 항목만 채우세요. <b>빈 항목은 회사 기준</b>을 씁니다. 계산 화면에서 "' + esc(d.cust) + ' 기준"을 고르면 적용돼요.</p>' +
+        '<div class="table-wrap"><table class="data sp-table"><thead><tr><th class="left">항목</th><th>업체 기준</th><th>방식</th>' + tons.map(function (t) { return '<th>' + esc(t) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        items.map(function (sp) {
+          var o = cur[sp.id];
+          return '<tr data-id="' + esc(sp.id) + '"><td class="left"><b>' + esc(sp.name) + '</b></td><td><input type="checkbox" data-on' + (o ? ' checked' : '') + '></td>' +
+            '<td><select class="input input-sm" data-mode><option value="amount"' + (!o || o.mode !== 'percent' ? ' selected' : '') + '>금액</option><option value="percent"' + (o && o.mode === 'percent' ? ' selected' : '') + '>%</option></select></td>' +
+            tons.map(function (t) { var v = o && o.values[t]; return '<td><input class="input input-sm num" data-t="' + esc(t) + '" value="' + (v ? v : '') + '" placeholder="–" inputmode="decimal"></td>'; }).join('') + '</tr>';
+        }).join('') + '</tbody></table></div>',
+      foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="csSave">저장</button>',
+      onMount: function (m, close) {
+        $$('tbody tr', m).forEach(function (tr) { $$('input[data-t]', tr).forEach(function (inp) { inp.oninput = function () { $('[data-on]', tr).checked = true; }; }); });
+        $('#csSave', m).onclick = function () {
+          var out = {};
+          $$('tbody tr', m).forEach(function (tr) {
+            if (!$('[data-on]', tr).checked) return;
+            var vals = {};
+            $$('input[data-t]', tr).forEach(function (inp) { var v = anNum(inp.value); if (v > 0) vals[inp.dataset.t] = v; });
+            out[tr.dataset.id] = { mode: $('[data-mode]', tr).value, values: vals };
+          });
+          var btn = this; busy(btn, true, '저장 중…');
+          api('rates.saveSpecials', { cust: d.cust, specials: out }).then(function (r) {
+            d.specials = r.specials; close(); toast('업체 특수운임을 저장했어요.');
+            state.rates.custs = null; state.rateCusts = null; if (state.view === 'rates') renderRates();
+          }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+        };
+      }
+    });
   }
 
   /* ───────── 서류함 ───────── */
@@ -4674,8 +5111,15 @@
         '<b>금액 조정</b>: 결과 표의 "금액 조정"을 누르면 열(톤수 전체), 행(그 경로 전체), 칸 하나를 직접 고칠 수 있어요. 빼려면 -5000처럼 입력합니다. 조정한 칸은 노란색, 직접 입력한 칸은 주황 테두리로 표시돼요.',
         '조정은 <b>견적으로 저장</b>할 때 같이 저장되고, 견적모음 상세에서 계속 고친 뒤 <b>조정 저장</b>을 누르면 돼요. 누가 언제 무엇을 바꿨는지는 "변경 기록"에 남아요.',
         '<b>구간 추가</b>: 견적모음 상세에서 새 구간을 넣으면 <b>그 견적을 낼 때의 타리프·할증 기준</b>으로 계산해 마지막 행에 붙여요. 열 조정도 자동으로 적용됩니다.',
+        '<b>특수 추가운임</b>: 계산 화면에서 냉동·리프트 같은 항목을 고르면 톤수별로 더해져요. 관리자가 금액을 넣은 항목만 보여요.',
         '결과 엑셀에는 계산식이 들어가요. 지역할증·하행·행 조정·열 조정(3행) 칸을 바꾸면 합계가 다시 계산됩니다.'
       ].concat(ha ? ['견적모음 상세의 <b>실적 연결</b>에서 매출처·경로를 이어 두면, 수주 후 실제 월별 매출·매입·이익을 견적 단가와 비교해서 보여 줍니다.'] : [])],
+      ['rates', '업체 단가', [
+        '<b>양식 내려받기</b>로 받은 엑셀에 상차지 · 하차지 · 톤수 · 단가를 채워 <b>단가표 올리기</b>로 올려요. 업체마다 달랐던 양식을 이 하나로 통일합니다.',
+        '<b>우리 타리프로 비교</b>: 올린 구간을 지금 단가로 계산해서 계약 단가와의 차이(원, %)를 보여 줘요. 계약 단가가 더 낮은 구간은 빨간색이에요.',
+        '<b>이 구간으로 새 견적</b>: 단가표의 구간 그대로 대량 계산을 돌려요. 결과에서 금액 조정 후 견적으로 저장하면 거래처가 미리 채워져 있어요.',
+        '<b>특수운임 설정</b>: 이 업체만 회사 기준과 다른 특수운임(냉동·리프트 등)을 정해요. 계산 화면의 특수운임에서 "업체 기준"을 고르면 적용돼요.'
+      ]],
       ['docs', '서류함', [
         '사업자등록증, 통장사본, 허가증, 보험증권, 견적서 양식 같은 회사 서류를 올려 두고 필요할 때 바로 미리보기·다운로드합니다.',
         '만료일을 넣어 두면 30일 전부터 서류함과 홈 화면에 표시됩니다.',
@@ -4717,7 +5161,7 @@
       '<div><div class="card help-head"><div class="eyebrow">Guide · 사용 안내</div><h2>JOIL 사용법</h2><p class="muted small" style="margin:6px 0 0">' + esc(state.user.name) + '님이 쓸 수 있는 메뉴만 안내합니다.</p></div>' +
       sec.map(function (s) {
         return '<section class="card help-sec" id="help-' + s[0] + '"><h3>' + s[1] + '</h3><ul>' + s[2].map(function (t) { return '<li>' + t + '</li>'; }).join('') + '</ul>' +
-          (['info', 'calc', 'bulk', 'history', 'docs', 'analysis', 'admin'].indexOf(s[0]) !== -1 ? '<button class="btn btn-sm" data-open="' + (s[0] === 'history' ? 'quotes' : s[0]) + '">' + s[1].split(' · ')[0] + ' 열기 →</button>' : '') + '</section>';
+          (['info', 'calc', 'bulk', 'history', 'rates', 'docs', 'analysis', 'admin'].indexOf(s[0]) !== -1 ? '<button class="btn btn-sm" data-open="' + (s[0] === 'history' ? 'quotes' : s[0]) + '">' + s[1].split(' · ')[0] + ' 열기 →</button>' : '') + '</section>';
       }).join('') + '</div></div>';
     $$('.help-rail button').forEach(function (b) { b.onclick = function () { var t = $('#help-' + b.dataset.sec); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
     $$('.help-sec [data-open]').forEach(function (b) { b.onclick = function () { state.view = b.dataset.open === 'quotes' ? 'history' : b.dataset.open; render(); window.scrollTo(0, 0); }; });

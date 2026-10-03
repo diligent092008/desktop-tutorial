@@ -122,7 +122,7 @@ function handle_(req) {
   }
 
   var QUOTE_ACTIONS = ['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete',
-    'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent', 'quotes.addRoutes'];
+    'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent', 'quotes.addRoutes', 'rates.list', 'rates.get', 'rates.upload', 'rates.saveSpecials'];
   if (QUOTE_ACTIONS.indexOf(action) !== -1) requirePerm_(session, 'quote');
   if (action === 'analysis.index' || action === 'analysis.load') requirePerm_(session, 'analysis');
   switch (action) {
@@ -139,6 +139,10 @@ function handle_(req) {
     case 'quotes.update': return quotesUpdate_(session, req.id, req.patch);
     case 'quotes.delete': return quotesDelete_(session, req.id);
     case 'quotes.addRoutes': return quotesAddRoutes_(session, req);
+    case 'rates.list': return ratesList_();
+    case 'rates.get': return ratesGet_(req.cust);
+    case 'rates.upload': return ratesUpload_(session, req);
+    case 'rates.saveSpecials': return saveCustSpecials_(req.cust, req.specials);
     case 'docs.list': return docsList_();
     case 'docs.upload': return docsUpload_(session, req);
     case 'docs.update': return docsUpdate_(session, req.id, req.patch);
@@ -176,6 +180,7 @@ function handle_(req) {
     case 'analysis.accessLog': return { logs: analysisAccessLog_(50) };
     case 'admin.saveCompanies': return saveCompanies_(req.companies);
     case 'admin.saveNews': return saveNewsRules_(req.rules);
+    case 'rates.delete': return ratesDelete_(req.cust);
   }
   throw new Error('알 수 없는 요청입니다: ' + action);
 }
@@ -359,13 +364,24 @@ function publicSettings_() {
     retentionDays: s.snapshot.retentionDays,
     quoteFooter: s.quoteFooter,
     maxKm: s.maxKm,
-    priceRounding: s.priceRounding
+    priceRounding: s.priceRounding,
+    specials: (s.specials || []).map(function (x) { return { id: x.id, name: x.name, mode: x.mode, set: Object.keys(x.values || {}).some(function (k) { return Number(x.values[k]); }) }; })
   };
 }
 
 function saveSettings_(settings) {
   if (!settings || !Array.isArray(settings.tons) || !Array.isArray(settings.regionRules)) throw new Error('설정 형식이 올바르지 않습니다.');
   var merged = joilMergeSettings(settings);
+  var tonNames = merged.tons.map(function (t) { return t.name; }), seen = {};
+  merged.specials = (Array.isArray(merged.specials) ? merged.specials : []).slice(0, 40).map(function (sp, i) {
+    var name = String(sp && sp.name || '').trim().slice(0, 30);
+    if (!name) throw new Error('특수 운임 ' + (i + 1) + '번째 항목의 이름을 입력하세요.');
+    var id = /^[A-Za-z0-9_-]{1,20}$/.test(String(sp.id || '')) && !seen[sp.id] ? String(sp.id) : 'sp' + Date.now().toString(36) + i;
+    seen[id] = true;
+    var vals = {};
+    tonNames.forEach(function (t) { var v = Number((sp.values || {})[t]); if (v) { if (!isFinite(v) || v < 0 || v > 100000000) throw new Error(name + ' ' + t + ' 금액이 올바르지 않습니다.'); vals[t] = Math.round(v * 100) / 100; } });
+    return { id: id, name: name, mode: sp.mode === 'percent' ? 'percent' : 'amount', values: vals };
+  });
   PropertiesService.getScriptProperties().setProperty('SETTINGS', JSON.stringify(merged));
   dropCalcCache_();
   return { settings: merged };
@@ -590,7 +606,7 @@ function snapshotMeta_(session, type, count, out) {
   return {
     ver: ver,
     type: type, at: now_(), user: { id: session.id, name: session.name }, count: count,
-    baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip,
+    baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip, specials: out.specials || [], cust: out.cust || '',
     tons: s.tons.map(function (t) { return t.name; })
   };
 }
@@ -675,7 +691,7 @@ function cleanupSnapshots_() {
  */
 var SHEET_VER = '타리프버전';
 var VER_HEADER = ['버전ID', '처음 사용', '사용자', '데이터1', '데이터2', '데이터3'];
-var CALC_KEYS = ['tons', 'maxKm', 'kmRounding', 'priceRounding', 'regionRules', 'downhill'];
+var CALC_KEYS = ['tons', 'maxKm', 'kmRounding', 'priceRounding', 'regionRules', 'downhill', 'specials'];
 
 function calcPart_(s) { var o = {}; CALC_KEYS.forEach(function (k) { o[k] = s[k]; }); return o; }
 
@@ -765,7 +781,9 @@ function quotesAddRoutes_(session, req) {
   if (pairs.length > BATCH_CHUNK_MAX) throw new Error('한 번에 ' + BATCH_CHUNK_MAX + '건까지 추가할 수 있습니다.');
   var meta = data.meta;
   var ver = meta.ver ? loadVersion_(meta.ver) : null;
-  var out = quoteMany_(pairs, { baseTon: meta.baseTon, dieselMode: 'manual', dieselPrice: meta.diesel && meta.diesel.price }, ver);
+  var used = null;
+  data.items.some(function (it) { if (it.result && it.result.specials) { used = it.result.specials; return true; } return false; });
+  var out = quoteMany_(pairs, { baseTon: meta.baseTon, dieselMode: 'manual', dieselPrice: meta.diesel && meta.diesel.price, specialsResolved: used || [] }, ver);
   if (meta.diesel) out.items.forEach(function (it) { if (it.result) it.result.dieselSource = meta.diesel.source; });
   var maxNo = data.items.reduce(function (m, it) { return Math.max(m, Number(it.no) || 0); }, 0);
   var added = [], failed = [], stamp = { at: now_(), by: session.name };
@@ -792,6 +810,140 @@ function quotesAddRoutes_(session, req) {
   res.failed = failed;
   res.usedVersion = ver ? meta.ver : null;
   return res;
+}
+
+/* ───────────── 업체별 단가표 · 특수 추가운임 ─────────────
+ * 업체단가: 업체마다 상차지·하차지·톤수·단가 (엑셀 양식으로 올림)
+ * 업체설정: 업체마다 특수 추가운임을 회사 기준과 다르게 쓸 때 (항목별로 덮어씀)
+ * 보기·올리기: 견적 권한자 · 업체 삭제: 관리자
+ */
+var SHEET_RATES = '업체단가';
+var RATES_HEADER = ['업체', '상차지', '하차지', '톤수', '단가', '적용시작일', '비고', '올린사람', '올린일시'];
+var SHEET_CUST = '업체설정';
+var CUST_HEADER = ['업체', '특수운임', '메모', '수정일시'];
+
+function custSpecials_(cust) {
+  if (!cust) return null;
+  var sh = SpreadsheetApp.getActive().getSheetByName(SHEET_CUST);
+  if (!sh || sh.getLastRow() < 2) return null;
+  var hit = sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(String(cust)).matchEntireCell(true).findNext();
+  return hit ? parseJson_(sh.getRange(hit.getRow(), 2).getValue(), null) : null;
+}
+
+/** 고른 특수운임 id → 계산용 목록 (업체 설정이 있으면 그 값으로 덮어씀) */
+function resolveSpecials_(s, ids, cust) {
+  ids = (ids || []).map(String);
+  if (!ids.length) return [];
+  var over = custSpecials_(cust) || {};
+  return (s.specials || []).filter(function (sp) { return ids.indexOf(sp.id) !== -1; }).map(function (sp) {
+    var o = over[sp.id];
+    return o ? { id: sp.id, name: sp.name, mode: o.mode || sp.mode, values: o.values || {}, cust: cust } : { id: sp.id, name: sp.name, mode: sp.mode, values: sp.values || {} };
+  });
+}
+
+function ratesSheet_() { return cacheSheet_(SHEET_RATES, RATES_HEADER); }
+
+function ratesList_() {
+  var sh = ratesSheet_(), by = {};
+  if (sh.getLastRow() >= 2) sh.getRange(2, 1, sh.getLastRow() - 1, RATES_HEADER.length).getValues().forEach(function (r) {
+    var c = String(r[0]); if (!c) return;
+    var x = by[c] || (by[c] = { cust: c, count: 0, updated: '', by: '' });
+    x.count++;
+    var at = fmt_(r[8]); if (at > x.updated) { x.updated = at; x.by = String(r[7]); }
+  });
+  var cs = SpreadsheetApp.getActive().getSheetByName(SHEET_CUST);
+  if (cs && cs.getLastRow() >= 2) cs.getRange(2, 1, cs.getLastRow() - 1, 3).getValues().forEach(function (r) {
+    var c = String(r[0]); if (!c) return;
+    var x = by[c] || (by[c] = { cust: c, count: 0, updated: '', by: '' });
+    x.hasSpecial = !!String(r[1]); x.memo = String(r[2] || '');
+  });
+  return { custs: Object.keys(by).sort().map(function (k) { return by[k]; }) };
+}
+
+function ratesGet_(cust) {
+  cust = String(cust || '');
+  var sh = ratesSheet_(), rows = [];
+  if (sh.getLastRow() >= 2) sh.getRange(2, 1, sh.getLastRow() - 1, RATES_HEADER.length).getValues().forEach(function (r) {
+    if (String(r[0]) === cust) rows.push([String(r[1]), String(r[2]), String(r[3]), Number(r[4]) || 0, textDate_(r[5]), String(r[6] || '')]);
+  });
+  return { cust: cust, rows: rows, specials: custSpecials_(cust) || {} };
+}
+
+function checkCustName_(c) {
+  c = String(c || '').trim();
+  if (!c) throw new Error('업체 이름을 입력하세요.');
+  if (c.length > 60) throw new Error('업체 이름이 너무 깁니다.');
+  return c;
+}
+
+/** 단가표 올리기 (mode: replace = 그 업체 것을 모두 바꿈 / append = 뒤에 추가) */
+function ratesUpload_(session, req) {
+  var cust = checkCustName_(req.cust);
+  var tons = getSettings_().tons.map(function (t) { return t.name; });
+  var rows = (req.rows || []).map(function (r, i) {
+    var from = String(r[0] || '').trim(), to = String(r[1] || '').trim(), ton = String(r[2] || '').trim(), price = Number(r[3]);
+    if (!from || !to) throw new Error((i + 1) + '번째 줄: 상차지·하차지를 확인하세요.');
+    if (tons.indexOf(ton) === -1) throw new Error((i + 1) + '번째 줄: 톤수 "' + ton + '"를 알 수 없습니다.');
+    if (!(price > 0)) throw new Error((i + 1) + '번째 줄: 단가를 확인하세요.');
+    var since = String(r[4] || '').trim();
+    if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) throw new Error((i + 1) + '번째 줄: 적용 시작일은 YYYY-MM-DD 입니다.');
+    return [cust, from.slice(0, 200), to.slice(0, 200), ton, Math.round(price), "'" + since, String(r[5] || '').slice(0, 200), session.name + ' (' + session.id + ')', now_()];
+  });
+  if (!rows.length) throw new Error('올릴 단가가 없습니다.');
+  if (rows.length > 5000) throw new Error('한 번에 5,000줄까지 올릴 수 있습니다.');
+  var sh = ratesSheet_();
+  var lock = LockService.getScriptLock(); lock.waitLock(20000);
+  try {
+    if (req.mode !== 'append') removeCustRows_(sh, cust);
+    sh.getRange(sh.getLastRow() + 1, 1, rows.length, RATES_HEADER.length).setValues(rows);
+  } finally { lock.releaseLock(); }
+  if (req.specials) saveCustSpecials_(cust, req.specials);
+  return { count: rows.length };
+}
+
+function removeCustRows_(sh, cust) {
+  if (sh.getLastRow() < 2) return;
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
+  for (var i = vals.length - 1; i >= 0; i--) {
+    if (String(vals[i][0]) !== cust) continue;
+    var end = i; while (i > 0 && String(vals[i - 1][0]) === cust) i--;
+    sh.deleteRows(i + 2, end - i + 1);
+  }
+}
+
+function cleanSpecialsOverride_(sp) {
+  var s = getSettings_(), ids = (s.specials || []).map(function (x) { return x.id; }), tons = s.tons.map(function (t) { return t.name; }), out = {};
+  Object.keys(sp || {}).forEach(function (id) {
+    if (ids.indexOf(id) === -1) return;
+    var o = sp[id] || {}, vals = {};
+    tons.forEach(function (t) { var v = Number((o.values || {})[t]); if (v) vals[t] = Math.round(v * 100) / 100; });
+    out[id] = { mode: o.mode === 'percent' ? 'percent' : 'amount', values: vals };
+  });
+  return out;
+}
+function saveCustSpecials_(cust, specials) {
+  cust = checkCustName_(cust);
+  var clean = cleanSpecialsOverride_(specials);
+  var sh = cacheSheet_(SHEET_CUST, CUST_HEADER);
+  var hit = sh.getLastRow() >= 2 && sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(cust).matchEntireCell(true).findNext();
+  var json = Object.keys(clean).length ? JSON.stringify(clean) : '';
+  if (hit) sh.getRange(hit.getRow(), 2, 1, 3).setValues([[json, sh.getRange(hit.getRow(), 3).getValue(), now_()]]);
+  else sh.appendRow([cust, json, '', now_()]);
+  return { specials: clean };
+}
+
+function ratesDelete_(cust) {
+  cust = checkCustName_(cust);
+  var lock = LockService.getScriptLock(); lock.waitLock(20000);
+  try {
+    removeCustRows_(ratesSheet_(), cust);
+    var cs = SpreadsheetApp.getActive().getSheetByName(SHEET_CUST);
+    if (cs && cs.getLastRow() >= 2) {
+      var hit = cs.getRange(2, 1, cs.getLastRow() - 1, 1).createTextFinder(cust).matchEntireCell(true).findNext();
+      if (hit) cs.deleteRow(hit.getRow());
+    }
+  } finally { lock.releaseLock(); }
+  return {};
 }
 
 /* ───────────── 견적모음 ───────────── */
@@ -929,6 +1081,7 @@ function quoteMany_(pairs, req, ver) {
   var tariff = ver ? ver.tariff : readTariff_();
   var baseTon = joilFindTon(s, req.baseTon) || joilFindTon(s, s.milkrun.baseTon) || s.tons[0];
   var tollClass = Number(baseTon.tollClass) || 1;
+  var specials = req.specialsResolved || resolveSpecials_(s, req.specials, req.cust);
 
   var diesel = (req.dieselMode === 'manual' && Number(req.dieselPrice) > 0)
     ? { price: Number(req.dieselPrice), source: '직접 입력' }
@@ -952,14 +1105,14 @@ function quoteMany_(pairs, req, ver) {
     var r = routes[routeKey_(o, d, tollClass)];
     if (!r || r.error) return { error: (r && r.error) || '경로를 찾지 못했습니다' };
     var result = joilComputeQuote({
-      origin: o, dest: d, distanceKm: r.km, toll: r.toll, dieselPrice: diesel.price, baseTon: baseTon.name
+      origin: o, dest: d, distanceKm: r.km, toll: r.toll, dieselPrice: diesel.price, baseTon: baseTon.name, specials: specials
     }, s, tariff);
     result.origin = o;
     result.dest = d;
     result.dieselSource = diesel.source;
     return { result: result };
   });
-  return { items: items, diesel: diesel, baseTon: baseTon.name };
+  return { items: items, diesel: diesel, baseTon: baseTon.name, specials: specials.map(function (x) { return x.id; }), cust: req.cust ? String(req.cust) : '' };
 }
 
 /* ───────────── 영구 캐시 (시트) ───────────── */

@@ -758,3 +758,31 @@ table.adj-editing td.total-cell, table.adj-editing td.total { padding: 4px 6px; 
 .adj-log ul { margin: 6px 0 0; padding-left: 18px; max-height: 220px; overflow: auto; line-height: 1.5; }
 .adj-log li + li { margin-top: 6px; }
 .err-notice { background: rgba(224, 71, 46, .09); border-color: rgba(224, 71, 46, .3); color: #8A2A18; margin: 0 0 14px; }
+
+/* ── 업체 단가 · 특수운임 ── */
+.rates-grid { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; align-items: start; }
+.rates-side { position: sticky; top: 90px; }
+.rt-list { list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow: auto; }
+.rt-list button { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 9px 10px; border: 0; background: none; border-radius: 10px; cursor: pointer; font: inherit; color: inherit; text-align: left; }
+.rt-list button:hover { background: var(--panel-2); }
+.rt-list button.on { background: var(--ink); color: #fff; }
+.rt-list button.on .muted { color: rgba(255,255,255,.7); }
+.rt-kpis { margin-top: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+table.data.rt-table td.wrap { max-width: 280px; }
+table.data.rt-table .left, table.data.sp-table .left { text-align: left; }
+table.data.sp-table td { padding: 4px 4px; }
+table.data.sp-table input.num { width: 86px; text-align: right; }
+table.data.sp-table input[data-f="name"] { min-width: 110px; }
+.sp-chip.on { background: #8A5A12; border-color: #8A5A12; }
+.sp-cell { white-space: nowrap; color: #8A5A12; font-weight: 700; }
+.sp-legend { margin: 8px 0 0 !important; color: #8A5A12; }
+@media (max-width: 980px) {
+  .rates-grid { grid-template-columns: 1fr; }
+  .rates-side { position: static; }
+  .rt-kpis { grid-template-columns: 1fr; }
+}
+.topbar .row { max-width: 1440px; }
+@media (max-width: 1440px) and (min-width: 981px) { .user-chip .role-badge, .user-chip .badge.region { display: none; } }
+@media (max-width: 980px) { .rates-grid { grid-template-columns: minmax(0, 1fr); } }
+table.data.sp-table select { min-width: 74px; }
+table.data.sp-table input.num { width: 78px; }

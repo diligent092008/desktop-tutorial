@@ -78,7 +78,8 @@
 
   function pubSettings() {
     var s = store.settings;
-    return { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, retentionDays: s.snapshot.retentionDays, quoteFooter: s.quoteFooter, maxKm: s.maxKm, priceRounding: s.priceRounding };
+    return { tons: s.tons.map(function (t) { return t.name; }), fuelMode: s.fuel.mode, manualPrice: s.fuel.manualPrice, baseTon: s.milkrun.baseTon, roundTrip: s.milkrun.roundTrip, maxRows: s.batch.maxRows, retentionDays: s.snapshot.retentionDays, quoteFooter: s.quoteFooter, maxKm: s.maxKm, priceRounding: s.priceRounding,
+      specials: (s.specials || []).map(function (x) { return { id: x.id, name: x.name, mode: x.mode, set: Object.keys(x.values || {}).some(function (k) { return Number(x.values[k]); }) }; }) };
   }
   function userList() {
     return store.users.map(function (u) { return { id: u.id, name: u.name, role: u.role, active: u.active, mustChange: u.mustChange, createdAt: u.createdAt, lastLogin: u.lastLogin, perms: permsOf(u) }; });
@@ -96,7 +97,7 @@
   }
   function snapMeta(me, type, count, out) {
     var s = store.settings;
-    return { ver: curVer(), type: type, at: today(), user: { id: me.id, name: me.name }, count: count, baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip, tons: s.tons.map(function (t) { return t.name; }) };
+    return { ver: curVer(), specials: out.specials || [], cust: out.cust || '', type: type, at: today(), user: { id: me.id, name: me.name }, count: count, baseTon: out.baseTon, diesel: out.diesel, roundTrip: !!s.milkrun.roundTrip, tons: s.tons.map(function (t) { return t.name; }) };
   }
   function addSnap(id, meta, items) {
     var sn = store.snaps[id] || (store.snaps[id] = { meta: meta, items: {} });
@@ -123,6 +124,10 @@
     var s = ver ? ver.s : store.settings, tariffOf = ver ? ver.t : store.tariff;
     var baseTon = joilFindTon(s, req.baseTon) || joilFindTon(s, s.milkrun.baseTon) || s.tons[0];
     var dp = req.dieselMode === 'manual' && Number(req.dieselPrice) > 0 ? { price: Number(req.dieselPrice), source: '직접 입력' } : diesel();
+    var over = (req.cust && store.custSp && store.custSp[req.cust]) || {};
+    var sps = req.specialsResolved || (s.specials || []).filter(function (sp) { return (req.specials || []).indexOf(sp.id) !== -1; }).map(function (sp) {
+      var o = over[sp.id]; return o ? { id: sp.id, name: sp.name, mode: o.mode, values: o.values, cust: req.cust } : { id: sp.id, name: sp.name, mode: sp.mode, values: sp.values || {} };
+    });
     var items = pairs.map(function (p) {
       var o, d;
       try { o = geocode(joilNormalizeAddress(p.origin)); } catch (e) { return { error: '상차지: ' + e.message }; }
@@ -130,11 +135,11 @@
       if (o.lat === d.lat && o.lng === d.lng) return { error: '경로 없음: 출발지와 도착지가 같습니다' };
       var km = Math.max(3, haversine(o, d) * 1.22);
       var toll = km < 15 ? 0 : Math.round((900 + km * 45) * (1 + 0.12 * (Number(baseTon.tollClass) - 1)) / 100) * 100;
-      var r = joilComputeQuote({ origin: o, dest: d, distanceKm: km, toll: toll, dieselPrice: dp.price, baseTon: baseTon.name }, s, tariffOf);
+      var r = joilComputeQuote({ origin: o, dest: d, distanceKm: km, toll: toll, dieselPrice: dp.price, baseTon: baseTon.name, specials: sps }, s, tariffOf);
       r.origin = o; r.dest = d; r.dieselSource = dp.source;
       return { result: r };
     });
-    return { items: items, diesel: dp, baseTon: baseTon.name };
+    return { items: items, diesel: dp, baseTon: baseTon.name, specials: sps.map(function (x) { return x.id; }), cust: req.cust || '' };
   }
 
   function handle(req) {
@@ -150,7 +155,7 @@
     var s = store.settings;
     if (me.mustChange && ['me', 'logout', 'changePassword', 'publicSettings'].indexOf(req.action) === -1) fail('임시 비밀번호입니다. 비밀번호를 먼저 변경하세요.');
     if (['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete',
-      'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent', 'quotes.addRoutes'].indexOf(req.action) !== -1) needPerm(me, 'quote');
+      'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent', 'quotes.addRoutes', 'rates.list', 'rates.get', 'rates.upload', 'rates.saveSpecials'].indexOf(req.action) !== -1) needPerm(me, 'quote');
     if (req.action === 'analysis.index' || req.action === 'analysis.load') needPerm(me, 'analysis');
     switch (req.action) {
       case 'analysis.index':
@@ -236,7 +241,8 @@
       case 'quotes.addRoutes':
         var aq = quoteOf(me, req.id), am = aq.data.meta;
         var vv = am.ver && store.versions && store.versions[am.ver];
-        var ao = quoteMany(req.pairs || [], { baseTon: am.baseTon, dieselMode: 'manual', dieselPrice: am.diesel && am.diesel.price }, vv || null);
+        var used = null; aq.data.items.some(function (x) { if (x.result && x.result.specials) { used = x.result.specials; return true; } return false; });
+        var ao = quoteMany(req.pairs || [], { baseTon: am.baseTon, dieselMode: 'manual', dieselPrice: am.diesel && am.diesel.price, specialsResolved: used || [] }, vv || null);
         var mx = aq.data.items.reduce(function (m, x) { return Math.max(m, x.no); }, 0), addedNos = [], failedA = [];
         ao.items.forEach(function (it, i) {
           if (it.error) failedA.push({ origin: req.pairs[i].origin, dest: req.pairs[i].dest, error: it.error });
@@ -255,6 +261,23 @@
         uq.name = uf.name; uq.client = uf.client; uq.memo = uf.memo; uq.status = uf.status; uq.updatedAt = today(); save();
         return { quote: publicQuote(uq) };
       case 'diesel.recent': return { now: diesel(), rows: dieselRows.slice(-60).map(function (r) { return [r[0], r[1]]; }) };
+      case 'rates.list':
+        var by = {}; (store.rates || []).forEach(function (r) { var x = by[r[0]] || (by[r[0]] = { cust: r[0], count: 0, updated: r[8], by: r[7] }); x.count++; });
+        Object.keys(store.custSp || {}).forEach(function (c) { (by[c] || (by[c] = { cust: c, count: 0, updated: '', by: '' })).hasSpecial = true; });
+        return { custs: Object.keys(by).sort().map(function (k) { return by[k]; }) };
+      case 'rates.get':
+        return { cust: req.cust, rows: (store.rates || []).filter(function (r) { return r[0] === req.cust; }).map(function (r) { return r.slice(1, 7); }), specials: (store.custSp || {})[req.cust] || {} };
+      case 'rates.upload':
+        var rc = String(req.cust || '').trim(); if (!rc) fail('업체 이름을 입력하세요.');
+        var tnames = s.tons.map(function (t) { return t.name; });
+        var nr = (req.rows || []).map(function (r, i) { if (tnames.indexOf(r[2]) === -1) fail((i + 1) + '번째 줄: 톤수 "' + r[2] + '"를 알 수 없습니다.'); return [rc, r[0], r[1], r[2], Number(r[3]), r[4] || '', r[5] || '', me.name, today()]; });
+        if (!nr.length) fail('올릴 단가가 없습니다.');
+        store.rates = (store.rates || []).filter(function (r) { return req.mode === 'append' || r[0] !== rc; }).concat(nr);
+        if (req.specials) { store.custSp = store.custSp || {}; store.custSp[rc] = req.specials; }
+        save(); return { count: nr.length };
+      case 'rates.saveSpecials':
+        store.custSp = store.custSp || {}; if (Object.keys(req.specials || {}).length) store.custSp[req.cust] = req.specials; else delete store.custSp[req.cust]; save();
+        return { specials: req.specials || {} };
       case 'docs.list': return { docs: docs.slice() };
       case 'docs.upload':
         var dm = docMeta(req);
@@ -319,6 +342,7 @@
         return { count: (req.rows || []).length, status: dieselStatus() };
       case 'analysis.accessLog': return { logs: anLog.slice(0, 50) };
       case 'admin.saveNews': return { rules: req.rules };
+      case 'rates.delete': store.rates = (store.rates || []).filter(function (r) { return r[0] !== req.cust; }); if (store.custSp) delete store.custSp[req.cust]; save(); return {};
       case 'admin.saveCompanies':
         var nc = {};
         ['조일물류', '명일로지스', '조일로지스'].forEach(function (b) {
