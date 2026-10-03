@@ -1674,14 +1674,14 @@ var WEATHER_REGIONS = [
 function newsRules_() {
   var raw = PropertiesService.getScriptProperties().getProperty('NEWS_RULES');
   var r = raw ? JSON.parse(raw) : {};
-  return { include: r.include || NEWS_DEFAULT.include, exclude: r.exclude || NEWS_DEFAULT.exclude, watch: r.watch || NEWS_DEFAULT.watch };
+  return { include: r.include || NEWS_DEFAULT.include, exclude: r.exclude || NEWS_DEFAULT.exclude, watch: r.watch || NEWS_DEFAULT.watch, blockSources: r.blockSources || [] };
 }
 function saveNewsRules_(rules) {
   var clean = function (list) {
     var seen = {};
     return (list || []).map(function (w) { return String(w || '').trim().slice(0, 40); }).filter(function (w) { if (!w || seen[w]) return false; seen[w] = true; return true; }).slice(0, 40);
   };
-  var r = { include: clean(rules && rules.include), exclude: clean(rules && rules.exclude), watch: clean(rules && rules.watch) };
+  var r = { include: clean(rules && rules.include), exclude: clean(rules && rules.exclude), watch: clean(rules && rules.watch), blockSources: clean(rules && rules.blockSources) };
   if (!r.include.length && !r.watch.length) throw new Error('모을 키워드를 하나 이상 넣으세요.');
   PropertiesService.getScriptProperties().setProperty('NEWS_RULES', JSON.stringify(r));
   CacheService.getScriptCache().remove('NEWS');
@@ -1697,11 +1697,26 @@ function parseRss_(xml, keyword, kind) {
   while ((m = re.exec(xml))) {
     var it = m[1], g = function (tag) { var x = new RegExp('<' + tag + '[^>]*>([\\s\\S]*?)</' + tag + '>').exec(it); return x ? xmlText_(x[1]) : ''; };
     var title = g('title'), source = g('source');
+    var su = /<source[^>]*url="([^"]*)"/.exec(it), host = '';
+    if (su) { var hm = /^https?:\/\/([^\/:?#]+)/i.exec(su[1]); host = hm ? hm[1].toLowerCase() : ''; }
     if (source && title.slice(-(source.length + 3)) === ' - ' + source) title = title.slice(0, -(source.length + 3));
     var t = Date.parse(g('pubDate'));
-    out.push({ title: title, link: g('link'), source: source, at: isNaN(t) ? 0 : t, kw: keyword, kind: kind });
+    out.push({ title: title, link: g('link'), source: source, host: host, at: isNaN(t) ? 0 : t, kw: keyword, kind: kind });
   }
   return out;
+}
+
+/** 국내 기사만: 제목에 한글이 있고, 언론사가 국내(한글 이름 · .kr 주소 · 국내 방송사) */
+var KR_MEDIA = ['KBS', 'MBC', 'SBS', 'YTN', 'JTBC', 'MBN', 'TV조선', 'TV CHOSUN', 'KTV', 'OBS', 'EBS', 'TBS', 'CBS', 'BBS', 'ZDNet Korea', 'ZDNET Korea', 'iMBC', 'Newsis', 'News1', 'NEWSIS', 'KMIB', 'SBS Biz', 'MTN', 'Edaily', 'inews24', 'etnews', 'thebell', 'Bloter', 'Ajunews', 'Hankyung', 'Chosunbiz', 'JoongAng', 'Dong-A'];
+var KR_HOSTS = ['chosun.com', 'donga.com', 'hankyung.com', 'mk.co.kr', 'newsis.com', 'news1.kr', 'yna.co.kr', 'yonhapnewstv.co.kr', 'kbs.co.kr', 'imbc.com', 'sbs.co.kr', 'ytn.co.kr', 'jtbc.co.kr', 'joins.com', 'joongang.co.kr', 'hani.co.kr', 'khan.co.kr', 'hankookilbo.com', 'segye.com', 'kmib.co.kr', 'munhwa.com', 'seoul.co.kr', 'sedaily.com', 'edaily.co.kr', 'asiae.co.kr', 'mt.co.kr', 'heraldcorp.com', 'fnnews.com', 'etnews.com', 'dt.co.kr', 'inews24.com', 'zdnet.co.kr', 'nocutnews.co.kr', 'ohmynews.com', 'pressian.com', 'ajunews.com', 'newspim.com', 'businesspost.co.kr', 'mbn.co.kr', 'tvchosun.com', 'klnews.co.kr', 'cargonews.co.kr', 'ksg.co.kr', 'bloter.net', 'thebell.co.kr', 'wowtv.co.kr', 'sbsbiz.co.kr', 'biz.chosun.com', 'news.naver.com', 'n.news.naver.com', 'v.daum.net'];
+function isDomesticNews_(n) {
+  var hangul = /[\uAC00-\uD7A3]/;
+  if (!hangul.test(n.title || '')) return false;
+  var src = String(n.source || ''), host = String(n.host || '');
+  if (hangul.test(src)) return true;
+  if (/\.kr$/.test(host)) return true;
+  if (KR_HOSTS.some(function (h) { return host === h || host.slice(-(h.length + 1)) === '.' + h; })) return true;
+  return KR_MEDIA.some(function (m) { return src.toLowerCase().indexOf(m.toLowerCase()) !== -1; });
 }
 
 function news_(force) {
@@ -1714,7 +1729,7 @@ function news_(force) {
   });
   var res = [];
   for (var i = 0; i < reqs.length; i += 20) res = res.concat(UrlFetchApp.fetchAll(reqs.slice(i, i + 20)));
-  var byTitle = {}, failed = 0;
+  var byTitle = {}, failed = 0, foreign = 0;
   res.forEach(function (r, i) {
     if (r.getResponseCode() !== 200) { failed++; return; }
     parseRss_(r.getContentText(), qs[i][0], qs[i][1]).forEach(function (n) {
@@ -1722,16 +1737,18 @@ function news_(force) {
       if (!key) return;
       var prev = byTitle[key];
       if (prev) { if (prev.kws.indexOf(n.kw) === -1) prev.kws.push(n.kw); if (n.kind === 'watch') prev.watch = true; return; }
+      if (!isDomesticNews_(n)) { foreign++; return; }
       byTitle[key] = { title: n.title, link: n.link, source: n.source, at: n.at, kws: [n.kw], watch: n.kind === 'watch' };
     });
   });
-  var ex = rules.exclude;
+  var ex = rules.exclude, blocked = rules.blockSources || [];
   var since = Date.now() - 7 * 86400000;
   var list = Object.keys(byTitle).map(function (k) { return byTitle[k]; }).filter(function (n) {
     if (n.at && n.at < since) return false;
+    if (blocked.some(function (b) { return n.source === b || (n.source || '').indexOf(b) !== -1; })) return false;
     return !ex.some(function (w) { return n.title.indexOf(w) !== -1; });
   }).sort(function (a, b) { return b.at - a.at; }).slice(0, 120);
-  var out = { items: list, at: now_(), failed: failed, keywords: rules };
+  var out = { items: list, at: now_(), failed: failed, foreign: foreign, keywords: rules };
   var s = JSON.stringify(out);
   while (s.length > 95000 && out.items.length > 10) { out.items = out.items.slice(0, Math.floor(out.items.length * 0.8)); s = JSON.stringify(out); }
   try { cache.put('NEWS', s, 1800); } catch (e) { /* 캐시 생략 */ }

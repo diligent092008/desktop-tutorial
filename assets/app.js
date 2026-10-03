@@ -4996,7 +4996,7 @@
     });
     var isAdmin = state.user.role === 'admin';
     box.innerHTML = '<div class="card"><div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:12px"><div><h3>물류 뉴스 <span class="muted small">최근 7일 · ' + items.length + '건</span></h3>' +
-      '<p class="muted small" style="margin:4px 0 0">구글 뉴스에서 키워드로 모았어요 · 30분마다 새로 모음 · ' + esc(r.at || '') + (r.failed ? ' · 일부 키워드 실패 ' + r.failed : '') + '</p></div>' +
+      '<p class="muted small" style="margin:4px 0 0">구글 뉴스에서 국내 언론사 기사만 모았어요 · 30분마다 새로 모음 · ' + esc(r.at || '') + (r.foreign ? ' · 해외 기사 ' + r.foreign + '건 제외' : '') + (r.failed ? ' · 일부 키워드 실패 ' + r.failed : '') + '</p></div>' +
       '<div class="actions">' + (isAdmin ? '<button class="btn btn-sm" id="nwSet">키워드 설정</button><button class="btn btn-sm" id="nwRe">지금 새로 모으기</button>' : '') + '</div></div>' +
       '<div class="toolbar"><div class="chips nw-chips">' +
       '<button type="button" class="chip' + (!f ? ' on' : '') + '" data-k="">전체 ' + items.length + '</button>' +
@@ -5025,13 +5025,15 @@
       body: '<p class="muted small" style="margin:0 0 12px">한 줄에 하나씩 넣으세요. 띄어쓰기까지 정확히 같은 말이 들어간 기사를 모아요.</p>' +
         '<div class="field"><label>모을 키워드 <span class="muted">(물류 업계 이슈)</span></label>' + ta('nkInc', k.include, '화물연대&#10;안전운임') + '</div>' +
         '<div class="field"><label>관심 업체 <span class="muted">(⭐ 표시 · 거래처·경쟁사)</span></label>' + ta('nkWatch', k.watch, '쿠팡&#10;CJ대한통운') + '</div>' +
-        '<div class="field"><label>제외 단어 <span class="muted">(제목에 있으면 빼기 · 자잘한 사고 등)</span></label>' + ta('nkEx', k.exclude, '교통사고&#10;추돌') + '</div>',
+        '<div class="field"><label>제외 단어 <span class="muted">(제목에 있으면 빼기 · 자잘한 사고 등)</span></label>' + ta('nkEx', k.exclude, '교통사고&#10;추돌') + '</div>' +
+        '<div class="field"><label>제외 언론사 <span class="muted">(언론사 이름 · 국내 언론사만 모으지만 더 빼고 싶을 때)</span></label>' + ta('nkSrc', k.blockSources, '블로그 이름&#10;언론사 이름') + '</div>' +
+        '<p class="hint" style="margin:0">해외 언론사 기사와 제목에 한글이 없는 기사는 자동으로 빠져요.</p>',
       foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="nkSave">저장</button>',
       onMount: function (m, close) {
         var lines = function (id) { return $(id, m).value.split(/\n|,/).map(function (x) { return x.trim(); }).filter(Boolean); };
         $('#nkSave', m).onclick = function () {
           var b = this; busy(b, true, '저장 중…');
-          api('admin.saveNews', { rules: { include: lines('#nkInc'), watch: lines('#nkWatch'), exclude: lines('#nkEx') } }).then(function () {
+          api('admin.saveNews', { rules: { include: lines('#nkInc'), watch: lines('#nkWatch'), exclude: lines('#nkEx'), blockSources: lines('#nkSrc') } }).then(function () {
             close(); toast('키워드를 저장했어요. 뉴스를 새로 모아요.'); done();
           }).catch(function (err) { busy(b, false); toast(err.message, 'err'); });
         };
