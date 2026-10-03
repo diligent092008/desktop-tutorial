@@ -1270,7 +1270,8 @@
       index: null, mapping: {}, businesses: [], rows: null, loading: false, loaded: 0, total: 0, error: null,
       f: { from: '', to: '', biz: [], sel: {}, q: '' }, dim: 'cust', sort: { key: 'sales', dir: -1 }, groupLimit: 50, groupQ: '',
       detailPage: 0, detailSort: -1, view: 'month',
-      cmp: 'prev', trendMode: 'profit', routeWeight: true, minN: 1, alert: { drop: 3, minSales: 1000000 }
+      cmp: 'prev', trendMode: 'profit', routeWeight: true, minN: 1, alert: { drop: 3, minSales: 1000000 },
+      anom: { kind: 'buy', th: 20, minN: 3, limit: 30 }
     };
   }
 
@@ -1947,6 +1948,253 @@
       labels + hits + '</svg><div class="tip hidden"></div></div>';
   }
 
+  /* ───────── 분석: 단가 이상치 (A1 매입이 비싼 오더 · A4 매출이 싼 오더) ───────── */
+  /*
+   * 같은 발지+착지+중량 오더들의 보통 단가(중앙값)와 비교합니다. 기준 데이터는 기간과 무관하게 전체 데이터
+   * (숨긴 매출처·제외/분류 규칙은 반영), 표시는 지금 걸려 있는 필터 안의 오더만.
+   */
+  var anomalyCache = null;
+  function median(arr) {
+    var a = arr.slice().sort(function (x, y) { return x - y; }), m = a.length >> 1;
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  }
+  function anomalyBase() {
+    var an = state.an, key = an.rows.length + '|' + JSON.stringify(an.rules || []) + '|' + JSON.stringify(an.mapping);
+    if (anomalyCache && anomalyCache.key === key) return anomalyCache;
+    var g = {};
+    an.rows.forEach(function (r) {
+      if (r[C.hidden] || r[C.cat]) return;
+      var k = r[C.from] + '\u0001' + r[C.to] + '\u0001' + r[C.weight];
+      var x = g[k] || (g[k] = { buys: [], sales: [] });
+      if (r[C.buys] > 0) x.buys.push(r[C.buys]);
+      if (r[C.sales] > 0) x.sales.push(r[C.sales]);
+    });
+    var base = {};
+    Object.keys(g).forEach(function (k) {
+      base[k] = { nb: g[k].buys.length, ns: g[k].sales.length, mb: g[k].buys.length ? median(g[k].buys) : 0, ms: g[k].sales.length ? median(g[k].sales) : 0 };
+    });
+    anomalyCache = { key: key, base: base };
+    return anomalyCache;
+  }
+  function findAnomalies(kind, rows) {
+    var an = state.an, set = an.anom, base = anomalyBase().base, th = set.th / 100, out = [];
+    rows.forEach(function (r) {
+      if (r[C.cat]) return;
+      var b = base[r[C.from] + '\u0001' + r[C.to] + '\u0001' + r[C.weight]];
+      if (!b) return;
+      if (kind === 'buy') {
+        if (!(r[C.buys] > 0) || b.nb - 1 < set.minN) return;
+        if (r[C.buys] > b.mb * (1 + th)) out.push({ r: r, base: b.mb, n: b.nb, diff: r[C.buys] - b.mb, ratio: (r[C.buys] / b.mb - 1) * 100 });
+      } else {
+        if (!(r[C.sales] > 0) || b.ns - 1 < set.minN) return;
+        if (r[C.sales] < b.ms * (1 - th)) out.push({ r: r, base: b.ms, n: b.ns, diff: b.ms - r[C.sales], ratio: (r[C.sales] / b.ms - 1) * 100 });
+      }
+    });
+    return out.sort(function (a, b) { return b.diff - a.diff; });
+  }
+
+  function drawAnomalies(rows) {
+    var an = state.an, set = an.anom, box = $('#anAnom');
+    if (!box) return;
+    if (an.showExcluded) { box.innerHTML = ''; return; }
+    var kind = set.kind;
+    var list = findAnomalies(kind, rows);
+    var total = list.reduce(function (s, x) { return s + x.diff; }, 0);
+    var shown = list.slice(0, set.limit);
+    var isBuy = kind === 'buy';
+    box.innerHTML = '<div class="card anom-card">' +
+      '<div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:10px"><div><div class="eyebrow">Outliers · 단가 이상치</div>' +
+      '<h3>' + (isBuy ? '매입이 평소보다 비싼 오더' : '매출이 평소보다 싼 오더') + ' <span class="' + (list.length ? 'neg' : 'muted') + '">' + won(list.length) + '건</span>' +
+      (list.length ? ' <span class="small muted">· ' + (isBuy ? '평소보다 더 나간 매입' : '평소보다 덜 받은 매출') + ' 합계 ' + won(Math.round(total)) + '원</span>' : '') + '</h3></div>' +
+      '<div class="actions" style="align-items:center"><div class="segmented" id="anomKind"><button type="button" data-k="buy" class="' + (isBuy ? 'on' : '') + '">매입 비싼 오더</button><button type="button" data-k="sell" class="' + (!isBuy ? 'on' : '') + '">매출 싼 오더</button></div>' +
+      '<span class="small">기준 ±<input class="input input-sm num" id="anomTh" type="number" min="5" max="200" step="5" value="' + set.th + '" style="width:62px">%</span>' +
+      '<span class="small">비교 오더 <select class="input input-sm" id="anomMin" style="width:auto">' + [2, 3, 5, 10].map(function (n) { return '<option value="' + n + '"' + (set.minN === n ? ' selected' : '') + '>' + n + '건↑</option>'; }).join('') + '</select></span>' +
+      '<button class="btn btn-sm" id="anomX"' + (list.length ? '' : ' disabled') + '>엑셀</button></div></div>' +
+      (list.length ? '<div class="bulk-table" style="max-height:520px"><table class="data bulk"><thead><tr><th class="left">날짜</th><th class="left">매출처</th><th class="left">경로 · 중량</th>' +
+        '<th>' + (isBuy ? '매입' : '매출') + '</th><th>보통 단가</th><th>차이</th><th>벗어난 정도</th><th>' + (isBuy ? '매출' : '매입') + '</th><th class="left">기사 · 차량</th><th class="left">비고</th></tr></thead><tbody>' +
+        shown.map(function (x) {
+          var r = x.r;
+          return '<tr><td class="left small">' + esc(r[C.date]) + '</td><td class="left wrap">' + esc(r[C.disp]) + '</td>' +
+            '<td class="left wrap"><span class="route"><span>' + esc(r[C.from]) + '</span><i>→</i><span>' + esc(r[C.to]) + '</span><em>' + esc(r[C.weight] || '-') + '</em></span><div class="addr-in">비교 ' + (x.n - 1) + '건</div></td>' +
+            '<td class="num strong">' + won(isBuy ? r[C.buys] : r[C.sales]) + '</td><td class="num muted">' + won(Math.round(x.base)) + '</td>' +
+            '<td class="num neg">' + (isBuy ? '+' : '−') + won(Math.round(x.diff)) + '</td><td class="num"><span class="dl bad">' + (x.ratio > 0 ? '+' : '') + x.ratio.toFixed(0) + '%</span></td>' +
+            '<td class="num">' + won(isBuy ? r[C.sales] : r[C.buys]) + '</td><td class="left small">' + esc(r[C.driver]) + ' ' + esc(r[C.car]) + '</td><td class="left small wrap">' + esc([r[C.etc], r[C.note]].filter(Boolean).join(' · ')) + '</td></tr>';
+        }).join('') + '</tbody></table></div>' +
+        (list.length > shown.length ? '<div style="text-align:center;margin-top:10px"><button class="btn btn-sm" id="anomMore">더 보기 (' + won(list.length - shown.length) + '건 남음)</button></div>' : '')
+        : '<p class="muted" style="margin:0">지금 조건에서는 기준을 벗어난 오더가 없어요.</p>') +
+      '<p class="hint" style="margin:8px 0 0">보통 단가 = 같은 발지·착지·중량 오더들의 중앙값 (전체 기간 기준). 대기·경유·수작업 같은 추가 요금이 붙은 오더도 걸릴 수 있으니 비고를 함께 보세요.</p></div>';
+    // 입력칸 포커스가 빠지면서 다시 그리기가 겹치지 않도록 한 박자 늦게
+    var later = function () { clearTimeout(an.anomTimer); an.anomTimer = setTimeout(function () { drawAnomalies(rows); }, 0); };
+    $$('#anomKind button').forEach(function (b) { b.onclick = function () { set.kind = b.dataset.k; set.limit = 30; later(); }; });
+    $('#anomTh').onchange = function () { set.th = Math.min(200, Math.max(5, Number(this.value) || 20)); later(); };
+    $('#anomMin').onchange = function () { set.minN = Number(this.value); later(); };
+    var more = $('#anomMore'); if (more) more.onclick = function () { set.limit += 100; drawAnomalies(rows); };
+    var ax = $('#anomX'); if (ax) ax.onclick = function () {
+      var btn = this; busy(btn, true, '…');
+      downloadXlsx('조일ver1_단가이상치_' + (isBuy ? '매입' : '매출') + '_' + an.f.from + '_' + an.f.to + '.xlsx', [{
+        name: isBuy ? '매입 비싼 오더' : '매출 싼 오더', widths: [11, 10, 26, 18, 18, 8, 12, 12, 12, 9, 12, 10, 12, 20, 20],
+        rows: [['날짜', '사업자', '매출처', '발지', '착지', '중량', isBuy ? '매입' : '매출', '보통 단가', '차이', '벗어난 정도(%)', isBuy ? '매출' : '매입', '기사명', '차량번호', '기타1', '비고']].concat(list.map(function (x) {
+          var r = x.r;
+          return [r[C.date], r[C.biz], r[C.disp], r[C.from], r[C.to], r[C.weight], isBuy ? r[C.buys] : r[C.sales], Math.round(x.base), Math.round(x.diff), Math.round(x.ratio), isBuy ? r[C.sales] : r[C.buys], r[C.driver], r[C.car], r[C.etc], r[C.note]];
+        }))
+      }]).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+    };
+  }
+
+  /* ───────── 분석: 매출처 상세 카드 (A2) ───────── */
+
+  function openCustCard(name) {
+    var an = state.an, f = an.f;
+    // 이 매출처만 (다른 선택 조건은 무시, 사업자·검색·분류 설정은 반영)
+    var saveSel = f.sel;
+    f.sel = { cust: [name] };
+    var allRows = anFilter(null, { from: '', to: '' });
+    var rows = anFilter(null);
+    var cr = cmpRange(), cmpRows = rangeHasData(cr) ? anFilter(null, { from: cr.from, to: cr.to }) : null;
+    f.sel = saveSel;
+    var t = agg(rows), c = cmpRows ? agg(cmpRows) : null;
+    var byM = {};
+    allRows.forEach(function (r) { var m = r[C.date].slice(0, 7); var x = byM[m] || (byM[m] = { s: 0, b: 0, n: 0 }); x.s += r[C.sales]; x.b += r[C.buys]; x.n++; });
+    var have = Object.keys(byM).sort(), months = [];
+    if (have.length) for (var mm = have[have.length - 1], k = 0; k < 24 && mm >= have[0]; k++, mm = addMonths(mm, -1)) months.unshift(mm);
+    var mk = function (m) { var x = byM[m] || { s: 0, b: 0, n: 0 }; return { m: m, s: x.s, b: x.b, n: x.n, p: x.s - x.b, rate: pct(x.s - x.b, x.s), has: !!byM[m] }; };
+    var data = months.map(function (m) { var d = mk(m); d.ly = mk(addMonths(m, -12)); return d; });
+    // 경로 조합 (선택 기간)
+    var g = {};
+    rows.forEach(function (r) {
+      var key = r[C.from] + '\u0001' + r[C.to] + '\u0001' + r[C.weight];
+      var x = g[key] || (g[key] = { from: r[C.from], to: r[C.to], w: r[C.weight], n: 0, s: 0, b: 0 });
+      x.n++; x.s += r[C.sales]; x.b += r[C.buys];
+    });
+    var routes = Object.keys(g).map(function (k) { var x = g[k]; x.p = x.s - x.b; x.r = pct(x.p, x.s); return x; });
+    var top = routes.slice().sort(function (a, b) { return b.n - a.n || b.p - a.p; }).slice(0, 10);
+    var loss = routes.filter(function (x) { return x.p < 0; }).sort(function (a, b) { return a.p - b.p; }).slice(0, 10);
+    var routeTable = function (list, empty) {
+      if (!list.length) return '<p class="muted small" style="margin:0">' + empty + '</p>';
+      return '<table class="data grp mini"><thead><tr><th class="left">경로 · 중량</th><th>건수</th><th>이익</th><th>이익률</th></tr></thead><tbody>' +
+        list.map(function (x) {
+          return '<tr><td class="left wrap"><span class="route"><span>' + esc(x.from) + '</span><i>→</i><span>' + esc(x.to) + '</span><em>' + esc(x.w || '-') + '</em></span></td><td class="num">' + won(x.n) + '</td>' +
+            '<td class="num' + (x.p < 0 ? ' neg' : '') + '">' + won(x.p) + '</td><td class="num' + (x.r != null && x.r < 0 ? ' neg' : '') + '">' + pctText(x.r) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    };
+    var period = f.from === f.to ? f.from : f.from + ' ~ ' + f.to;
+    modal({
+      wide: true, eyebrow: '매출처 상세 · ' + period, title: name,
+      body:
+        '<div class="kpis mini">' + [
+          ['이익', won(t.p) + '원', t.p < 0, c && deltaHtml(deltaPct(t.p, c.p), '%', true)],
+          ['이익률', pctText(t.r), t.r != null && t.r < 0, c && (t.r != null && c.r != null ? deltaHtml(t.r - c.r, '%p', true) : '')],
+          ['매출', won(t.s) + '원', false, c && deltaHtml(deltaPct(t.s, c.s), '%', true)],
+          ['건수', won(t.n) + '건', false, c && deltaHtml(deltaPct(t.n, c.n), '%', true)]
+        ].map(function (k) { return '<div class="kpi"><div class="k">' + k[0] + '</div><div class="v num' + (k[2] ? ' neg' : '') + '">' + k[1] + '</div><div class="s">' + (k[3] ? k[3] + ' <span class="muted">' + esc(cr.label) + ' 대비</span>' : '') + '</div></div>'; }).join('') + '</div>' +
+        '<div class="cc-charts"><div id="ccTrend"><div class="row-between"><h3>월별 이익</h3><div class="legend"><span><i style="background:' + AN_SALES_COLOR + '"></i>이익</span><span><i style="background:' + AN_BUYS_COLOR + '"></i>손실</span><span><i class="ly"></i>전년 같은 달</span></div></div>' + profitChart(data) + '</div>' +
+        '<div id="ccRate"><h3>월별 이익률</h3>' + lineChart(data) + '</div></div>' +
+        '<div class="cc-routes"><div><h3>주력 경로 <span class="muted small">건수 많은 순 · ' + esc(period) + '</span></h3>' + routeTable(top, '이 기간에 오더가 없어요.') + '</div>' +
+        '<div><h3>손실 경로 <span class="muted small">손실 큰 순</span></h3>' + routeTable(loss, '손실 난 경로가 없어요. 👍') + '</div></div>',
+      foot: '<button class="btn" data-close>닫기</button><button class="btn btn-primary" id="ccFilter">이 매출처로 걸러 보기</button>',
+      onMount: function (m, close) {
+        bindChartHover($('#ccTrend', m), data, function (d) { return '<b>' + d.m + '</b><br>이익 ' + won(d.p) + ' · ' + pctText(d.rate) + '<br>매출 ' + won(d.s) + '<br>' + won(d.n) + '건' + (d.ly.has ? '<br><span style="opacity:.75">전년: 이익 ' + won(d.ly.p) + '</span>' : ''); });
+        bindChartHover($('#ccRate', m), data, function (d) { return '<b>' + d.m + '</b><br>이익률 ' + pctText(d.rate); });
+        $('#ccFilter', m).onclick = function () { f.sel = { cust: [name] }; an.dim = 'route'; an.sort = { key: 'profit', dir: 1 }; close(); renderAnalysis(); };
+      }
+    });
+  }
+
+  /* ───────── 분석: 월간 보고서 (A3) ───────── */
+
+  function openReport() {
+    var an = state.an, f = an.f;
+    var period = f.from === f.to ? f.from : f.from + ' ~ ' + f.to;
+    var rows = anFilter(null), t = agg(rows);
+    var cr = cmpRange(), hasCmp = rangeHasData(cr), c = hasCmp ? agg(anFilter(null, { from: cr.from, to: cr.to })) : null;
+    var yr = { from: addMonths(f.from, -12), to: addMonths(f.to, -12) }, hasYoy = an.cmp !== 'yoy' && rangeHasData(yr);
+    var y = hasYoy ? agg(anFilter(null, { from: yr.from, to: yr.to })) : null;
+    var byKey = function (getter, list) {
+      var g = {};
+      list.forEach(function (r) { var k = getter(r), x = g[k] || (g[k] = { k: k, n: 0, s: 0, b: 0 }); x.n++; x.s += r[C.sales]; x.b += r[C.buys]; });
+      return Object.keys(g).map(function (k) { var x = g[k]; x.p = x.s - x.b; x.r = pct(x.p, x.s); return x; });
+    };
+    var bizRows = byKey(function (r) { return r[C.biz]; }, rows).sort(function (a, b) { return b.s - a.s; });
+    var custs = byKey(function (r) { return r[C.disp]; }, rows);
+    var topP = custs.slice().sort(function (a, b) { return b.p - a.p; }).slice(0, 10);
+    var lowP = custs.filter(function (x) { return x.p < 0 || (x.r != null && x.r < 3); }).sort(function (a, b) { return a.p - b.p; }).slice(0, 10);
+    // 확인해 볼 곳
+    var watch = [];
+    if (hasCmp) {
+      var prevC = {}; byKey(function (r) { return r[C.disp]; }, anFilter(null, { from: cr.from, to: cr.to })).forEach(function (x) { prevC[x.k] = x; });
+      watch = custs.map(function (x) { var p = prevC[x.k]; if (!p) return null; x.cr = p.r; x.dr = x.r != null && p.r != null ? x.r - p.r : null; x.turned = p.p > 0 && x.p < 0; return x; })
+        .filter(function (x) { return x && x.s >= an.alert.minSales && (x.turned || (x.dr != null && x.dr <= -an.alert.drop)); })
+        .sort(function (a, b) { return a.dr - b.dr; }).slice(0, 10);
+    }
+    var buyAnom = findAnomalies('buy', rows), sellAnom = findAnomalies('sell', rows);
+    var sumDiff = function (l) { return Math.round(l.reduce(function (s, x) { return s + x.diff; }, 0)); };
+    // 월별 (최근 12개월)
+    var all = anFilter(null, { from: '', to: '' }), byM = {};
+    all.forEach(function (r) { var m = r[C.date].slice(0, 7); var x = byM[m] || (byM[m] = { s: 0, b: 0, n: 0 }); x.s += r[C.sales]; x.b += r[C.buys]; x.n++; });
+    var months = [];
+    for (var mm = f.to, k = 0; k < 12; k++, mm = addMonths(mm, -1)) months.unshift(mm);
+    var mk = function (m) { var x = byM[m] || { s: 0, b: 0, n: 0 }; return { m: m, s: x.s, b: x.b, n: x.n, p: x.s - x.b, rate: pct(x.s - x.b, x.s), has: !!byM[m] }; };
+    var data = months.map(function (m) { var d = mk(m); d.ly = mk(addMonths(m, -12)); return d; });
+    var scope = [];
+    if (f.biz.length) scope.push('사업자: ' + f.biz.join(', '));
+    Object.keys(f.sel).forEach(function (kk) { if ((f.sel[kk] || []).length) scope.push(dimDef(kk)[1] + ': ' + f.sel[kk].join(', ')); });
+    if (f.q) scope.push('검색: ' + f.q);
+    var cmpCell = function (cur, prev, unit, goodUp, isRate) {
+      if (prev == null) return '<td class="num muted">–</td>';
+      return '<td class="num">' + (isRate ? pctText(prev) : won(prev)) + ' ' + deltaHtml(isRate ? (cur != null ? cur - prev : null) : deltaPct(cur, prev), unit, goodUp) + '</td>';
+    };
+    var tbl = function (list, cols) {
+      return '<table class="data rpt"><thead><tr>' + cols.map(function (c2) { return '<th class="' + (c2[2] ? 'left' : '') + '">' + c2[0] + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        list.map(function (x) { return '<tr>' + cols.map(function (c2) { return c2[1](x); }).join('') + '</tr>'; }).join('') + '</tbody></table>';
+    };
+    var numCell = function (v, neg) { return '<td class="num' + (neg ? ' neg' : '') + '">' + v + '</td>'; };
+    var html =
+      '<div class="rpt-bar no-print"><span class="muted small">보고서 미리보기 · 인쇄 창에서 "PDF로 저장"을 고르면 PDF가 돼요</span><span class="spacer"></span>' +
+      '<button class="btn btn-sm" id="rptX">엑셀</button><button class="btn btn-sm btn-primary" id="rptPrint">인쇄 / PDF 저장</button><button class="btn btn-sm" id="rptClose">닫기</button></div>' +
+      '<div class="rpt-page">' +
+      '<header class="rpt-head"><div class="stripe-bar"></div><div class="rpt-title"><div><div class="eyebrow">Monthly Report · 매출매입 보고</div><h1>' + esc(period) + ' 매출 · 매입 · 이익 보고</h1>' +
+      '<p class="muted small">' + esc(scope.length ? scope.join(' · ') : '전체 사업자 · 전체 매출처') + ' · 작성 ' + esc(today()) + ' · ' + esc(state.user.name) + '</p></div><span class="logo"></span></div></header>' +
+      '<section><h2>1. 요약</h2><table class="data rpt"><thead><tr><th class="left">항목</th><th>' + esc(period) + '</th><th>' + (hasCmp ? esc(cr.label) + ' 대비' : '비교') + '</th>' + (hasYoy ? '<th>전년 같은 기간 대비</th>' : '') + '</tr></thead><tbody>' +
+      [['이익', t.p, c && c.p, y && y.p, '%', true], ['이익률', t.r, c && c.r, y && y.r, '%p', true, true], ['매출', t.s, c && c.s, y && y.s, '%', true], ['매입', t.b, c && c.b, y && y.b, '%', false], ['건수', t.n, c && c.n, y && y.n, '%', true]].map(function (r) {
+        return '<tr><td class="left strong">' + r[0] + '</td>' + numCell(r[6] ? pctText(r[1]) : won(r[1]) + (r[0] === '건수' ? '건' : '원'), r[1] < 0) + cmpCell(r[1], c ? r[2] : null, r[4], r[5], r[6]) + (hasYoy ? cmpCell(r[1], r[3], r[4], r[5], r[6]) : '') + '</tr>';
+      }).join('') + '</tbody></table></section>' +
+      '<section><h2>2. 사업자별</h2>' + tbl(bizRows, [['사업자', function (x) { return '<td class="left strong">' + esc(x.k) + '</td>'; }, 1], ['건수', function (x) { return numCell(won(x.n)); }], ['매출', function (x) { return numCell(won(x.s)); }], ['매입', function (x) { return numCell(won(x.b)); }], ['이익', function (x) { return numCell(won(x.p), x.p < 0); }], ['이익률', function (x) { return numCell(pctText(x.r), x.r < 0); }]]) + '</section>' +
+      '<section class="rpt-charts"><div><h2>3. 월별 이익 (최근 12개월)</h2><div class="legend"><span><i style="background:' + AN_SALES_COLOR + '"></i>이익</span><span><i style="background:' + AN_BUYS_COLOR + '"></i>손실</span><span><i class="ly"></i>전년 같은 달</span></div>' + profitChart(data) + '</div>' +
+      '<div><h2>월별 이익률</h2>' + lineChart(data) + '</div></section>' +
+      (hasCmp ? '<section><h2>4. 확인해 볼 곳 <span class="small muted">' + esc(cr.label) + '보다 이익률 ' + an.alert.drop + '%p 이상 하락 또는 적자 전환</span></h2>' +
+        (watch.length ? tbl(watch, [['매출처', function (x) { return '<td class="left">' + (x.turned ? '<b class="neg">[적자 전환]</b> ' : '') + esc(x.k) + '</td>'; }, 1], ['이익률', function (x) { return numCell(pctText(x.r), x.r < 0); }], [esc(cr.label), function (x) { return numCell(pctText(x.cr)); }], ['변화', function (x) { return '<td class="num">' + deltaHtml(x.dr, '%p', true) + '</td>'; }], ['이익', function (x) { return numCell(won(x.p), x.p < 0); }], ['매출', function (x) { return numCell(won(x.s)); }]]) : '<p class="muted">해당하는 매출처가 없습니다.</p>') + '</section>' : '') +
+      '<section class="rpt-two"><div><h2>' + (hasCmp ? '5' : '4') + '. 이익 상위 10</h2>' + tbl(topP, [['매출처', function (x) { return '<td class="left">' + esc(x.k) + '</td>'; }, 1], ['이익', function (x) { return numCell(won(x.p), x.p < 0); }], ['이익률', function (x) { return numCell(pctText(x.r)); }], ['건수', function (x) { return numCell(won(x.n)); }]]) + '</div>' +
+      '<div><h2>' + (hasCmp ? '6' : '5') + '. 손실 · 저마진 10 <span class="small muted">이익률 3% 미만</span></h2>' + (lowP.length ? tbl(lowP, [['매출처', function (x) { return '<td class="left">' + esc(x.k) + '</td>'; }, 1], ['이익', function (x) { return numCell(won(x.p), x.p < 0); }], ['이익률', function (x) { return numCell(pctText(x.r), x.r < 0); }], ['건수', function (x) { return numCell(won(x.n)); }]]) : '<p class="muted">없습니다.</p>') + '</div></section>' +
+      '<section><h2>' + (hasCmp ? '7' : '6') + '. 단가 이상치 <span class="small muted">같은 경로·중량 보통 단가 대비 ±' + an.anom.th + '%</span></h2>' +
+      '<table class="data rpt"><tbody><tr><td class="left">매입이 평소보다 비싼 오더</td><td class="num">' + won(buyAnom.length) + '건</td><td class="num neg">+' + won(sumDiff(buyAnom)) + '원</td></tr>' +
+      '<tr><td class="left">매출이 평소보다 싼 오더</td><td class="num">' + won(sellAnom.length) + '건</td><td class="num neg">−' + won(sumDiff(sellAnom)) + '원</td></tr></tbody></table>' +
+      (buyAnom.length ? '<p class="small muted" style="margin:8px 0 4px">매입 초과 상위 5건</p>' + tbl(buyAnom.slice(0, 5), [['날짜', function (x) { return '<td class="left small">' + esc(x.r[C.date]) + '</td>'; }, 1], ['매출처', function (x) { return '<td class="left">' + esc(x.r[C.disp]) + '</td>'; }, 1], ['경로', function (x) { return '<td class="left">' + esc(x.r[C.from] + ' → ' + x.r[C.to] + ' · ' + x.r[C.weight]) + '</td>'; }, 1], ['매입', function (x) { return numCell(won(x.r[C.buys])); }], ['보통', function (x) { return numCell(won(Math.round(x.base))); }], ['기사', function (x) { return '<td class="left small">' + esc(x.r[C.driver]) + '</td>'; }, 1]]) : '') +
+      '</section>' +
+      '<footer class="rpt-foot muted small">조일ver1 · 이익 = 매출후불 − 매입후불 · 관리자가 정한 제외 규칙과 숨긴 매출처는 빠진 숫자입니다.</footer></div>';
+    var wrap = document.createElement('div');
+    wrap.id = 'report';
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap);
+    document.body.classList.add('report-open');
+    window.scrollTo(0, 0);
+    function close() { wrap.remove(); document.body.classList.remove('report-open'); }
+    $('#rptClose').onclick = close;
+    $('#rptPrint').onclick = function () { window.print(); };
+    $('#rptX').onclick = function () {
+      var btn = this; busy(btn, true, '…');
+      var custRows = custs.slice().sort(function (a, b) { return b.p - a.p; });
+      var sheets = [
+        { name: '요약', widths: [12, 18, 18, 18], rows: [['항목', period, hasCmp ? cr.label : '', hasYoy ? '전년 같은 기간' : '']].concat([['이익', t.p, c && c.p, y && y.p], ['이익률(%)', t.r == null ? '' : +t.r.toFixed(1), c && c.r != null ? +c.r.toFixed(1) : '', y && y.r != null ? +y.r.toFixed(1) : ''], ['매출', t.s, c && c.s, y && y.s], ['매입', t.b, c && c.b, y && y.b], ['건수', t.n, c && c.n, y && y.n]].map(function (r) { return r.map(function (v) { return v == null || v === false ? '' : v; }); })).concat([[], ['범위', scope.join(' · ') || '전체'], ['작성', today() + ' ' + state.user.name]]) },
+        { name: '사업자별', widths: [14, 8, 15, 15, 15, 9], rows: [['사업자', '건수', '매출', '매입', '이익', '이익률(%)']].concat(bizRows.map(function (x) { return [x.k, x.n, x.s, x.b, x.p, x.r == null ? '' : +x.r.toFixed(1)]; })) },
+        { name: '월별', widths: [10, 15, 15, 15, 9, 8], rows: [['월', '매출', '매입', '이익', '이익률(%)', '건수']].concat(data.map(function (d) { return [d.m, d.s, d.b, d.p, d.rate == null ? '' : +d.rate.toFixed(1), d.n]; })) },
+        { name: '매출처별', widths: [32, 8, 15, 15, 15, 9], rows: [['매출처', '건수', '매출', '매입', '이익', '이익률(%)']].concat(custRows.map(function (x) { return [x.k, x.n, x.s, x.b, x.p, x.r == null ? '' : +x.r.toFixed(1)]; })) }
+      ];
+      if (hasCmp) sheets.push({ name: '확인해 볼 곳', widths: [32, 9, 12, 10, 15, 15], rows: [['매출처', '이익률(%)', cr.label + '(%)', '변화(%p)', '이익', '매출']].concat(watch.map(function (x) { return [(x.turned ? '[적자 전환] ' : '') + x.k, x.r == null ? '' : +x.r.toFixed(1), x.cr == null ? '' : +x.cr.toFixed(1), x.dr == null ? '' : +x.dr.toFixed(1), x.p, x.s]; })) });
+      sheets.push({ name: '단가 이상치', widths: [8, 11, 26, 18, 18, 8, 12, 12, 12, 10], rows: [['구분', '날짜', '매출처', '발지', '착지', '중량', '금액', '보통 단가', '차이', '기사명']].concat(buyAnom.map(function (x) { return ['매입 비쌈', x.r[C.date], x.r[C.disp], x.r[C.from], x.r[C.to], x.r[C.weight], x.r[C.buys], Math.round(x.base), Math.round(x.diff), x.r[C.driver]]; })).concat(sellAnom.map(function (x) { return ['매출 쌈', x.r[C.date], x.r[C.disp], x.r[C.from], x.r[C.to], x.r[C.weight], x.r[C.sales], Math.round(x.base), Math.round(x.diff), x.r[C.driver]]; })) });
+      downloadXlsx('조일ver1_매출매입보고_' + period.replace(/ ~ /, '_') + '.xlsx', sheets).catch(function (err) { toast(err.message, 'err'); }).then(function () { busy(btn, false); });
+    };
+  }
+
   /* ───────── 매출매입 분석 화면 ───────── */
 
   var AN_DIMS = [
@@ -2055,7 +2303,7 @@
     main.innerHTML =
       '<div class="card anfilter">' +
       '<div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:12px"><div><div class="eyebrow">Analysis · 매출매입 분석</div><h2>매출 · 매입 · 이익</h2></div>' +
-      '<div class="actions"><button class="btn btn-sm" id="anReset">필터 초기화</button><button class="btn btn-sm" id="anReload">데이터 새로고침</button></div></div>' +
+      '<div class="actions"><button class="btn btn-sm btn-primary" id="anReport">월간 보고서</button><button class="btn btn-sm" id="anReset">필터 초기화</button><button class="btn btn-sm" id="anReload">데이터 새로고침</button></div></div>' +
       '<div class="anfilter-row">' +
       '<div class="fgroup"><span class="flabel">기간</span><select class="input input-sm" id="anFrom">' + months.map(function (m) { return '<option' + (m === f.from ? ' selected' : '') + '>' + m + '</option>'; }).join('') + '</select>' +
       '<span class="muted">~</span><select class="input input-sm" id="anTo">' + months.map(function (m) { return '<option' + (m === f.to ? ' selected' : '') + '>' + m + '</option>'; }).join('') + '</select>' +
@@ -2074,6 +2322,7 @@
       '<div id="anKpi" class="kpis"></div><div id="anAlerts"></div><div id="anCats"></div>' +
       '<div class="an-charts"><div class="card" id="anTrend"></div><div class="card" id="anRate"></div></div>' +
       '<div class="card" id="anGroup" style="margin-top:16px"></div>' +
+      '<div id="anAnom" style="margin-top:16px"></div>' +
       '<div class="card" id="anDetail" style="margin-top:16px"></div>';
 
     $('#anFrom').onchange = function () { f.from = this.value; if (f.to < f.from) f.to = f.from; refresh(); };
@@ -2089,6 +2338,7 @@
       c.onclick = function () { var i = f.biz.indexOf(c.dataset.b); if (i === -1) f.biz.push(c.dataset.b); else f.biz.splice(i, 1); refresh(); };
     });
     $('#anCustPick').onclick = openCustPicker;
+    $('#anReport').onclick = openReport;
     var wc = $('#anWithCats'); if (wc) wc.onclick = function () { f.withCats = !f.withCats; refresh(); };
     var sx = $('#anShowX'); if (sx) sx.onclick = function () { an.showExcluded = !an.showExcluded; refresh(); };
     $('#anQ').onkeydown = function (e) { if (e.key === 'Enter') { f.q = this.value.trim(); refresh(); } };
@@ -2145,6 +2395,7 @@
     if (an.dim === 'cat' && !(an.hasCats && f.withCats)) an.dim = 'cust';
     drawTrend();
     drawGroup();
+    drawAnomalies(rows);
     drawDetail(rows);
   }
 
@@ -2259,15 +2510,17 @@
       [[0, '전체'], [500000, '50만↑'], [1000000, '100만↑'], [5000000, '500만↑'], [10000000, '1,000만↑']].map(function (o) { return '<option value="' + o[0] + '"' + (al.minSales === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div></div>' +
       (list.length ? '<div class="table-wrap"><table class="data grp"><thead><tr><th class="left">매출처</th><th>이익률</th><th>' + esc(cr.label) + '</th><th>변화</th><th>이익</th><th>이익 증감</th><th>매출</th><th>건수</th></tr></thead><tbody>' +
         list.slice(0, 15).map(function (x) {
-          return '<tr class="pick" data-k="' + esc(x.k) + '"><td class="left wrap">' + (x.turned ? '<span class="badge down">적자 전환</span> ' : '') + esc(x.k) + '</td>' +
+          return '<tr class="pick" data-k="' + esc(x.k) + '"><td class="left wrap">' + (x.turned ? '<span class="badge down">적자 전환</span> ' : '') + esc(x.k) + ' <button class="cc-btn" data-cc="' + esc(x.k) + '">상세</button></td>' +
             '<td class="num' + (x.r < 0 ? ' neg' : '') + '">' + pctText(x.r) + '</td><td class="num muted">' + pctText(x.cr) + '</td>' +
             '<td class="num">' + deltaHtml(x.dr, '%p', true) + '</td><td class="num' + (x.p < 0 ? ' neg' : '') + '">' + won(x.p) + '</td>' +
             '<td class="num' + (x.dp < 0 ? ' neg' : '') + '">' + (x.dp > 0 ? '+' : '') + won(x.dp) + '</td><td class="num">' + won(x.s) + '</td><td class="num">' + won(x.n) + '</td></tr>';
         }).join('') + '</tbody></table></div>' + (list.length > 15 ? '<p class="hint" style="margin:6px 0 0">상위 15곳만 표시 · 아래 순위표에서 "이익률 하락 큰 순"으로 전체를 볼 수 있어요.</p>' : '') +
         '<p class="hint" style="margin:8px 0 0">행을 누르면 그 매출처로 걸러져서, 아래 "경로 조합" 탭에서 어느 경로에서 손실이 났는지 바로 볼 수 있어요.</p>'
         : '<p class="muted" style="margin:0">조건에 해당하는 매출처가 없어요. 👍</p>') + '</div>';
-    $('#alDrop').onchange = function () { al.drop = Math.max(0, Number(this.value) || 0); drawAlerts(cr, hasCmp); };
-    $('#alMin').onchange = function () { al.minSales = Number(this.value); drawAlerts(cr, hasCmp); };
+    var later = function () { clearTimeout(an.alertTimer); an.alertTimer = setTimeout(function () { drawAlerts(cr, hasCmp); }, 0); };
+    $('#alDrop').onchange = function () { al.drop = Math.max(0, Number(this.value) || 0); later(); };
+    $('#alMin').onchange = function () { al.minSales = Number(this.value); later(); };
+    $$('#anAlerts [data-cc]').forEach(function (b) { b.onclick = function (e) { e.stopPropagation(); openCustCard(b.dataset.cc); }; });
     $$('#anAlerts tr.pick').forEach(function (tr) {
       tr.onclick = function () { an.f.sel.cust = [tr.dataset.k]; an.dim = 'route'; an.sort = { key: 'profit', dir: 1 }; an.detailPage = 0; renderAnalysis(); var g = $('#anGroup'); if (g) g.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
     });
@@ -2406,7 +2659,7 @@
         var on = selected.indexOf(x.k) !== -1;
         var name = isRoute
           ? '<span class="route"><span>' + esc(x.parts[0] || '(빈칸)') + '</span><i>→</i><span>' + esc(x.parts[1] || '(빈칸)') + '</span>' + (an.routeWeight ? '<em>' + esc(x.parts[2] || '-') + '</em>' : '') + '</span>'
-          : '<span class="pickbox">' + (on ? '✓' : '') + '</span>' + esc(x.k || '(빈칸)');
+          : '<span class="pickbox">' + (on ? '✓' : '') + '</span>' + esc(x.k || '(빈칸)') + (dim === 'cust' ? ' <button class="cc-btn" data-cc="' + esc(x.k) + '" title="매출처 상세">상세</button>' : '');
         return '<tr class="pick' + (on ? ' picked' : '') + '" data-k="' + esc(x.k) + '"><td class="left wrap">' + name + '</td><td class="num">' + won(x.n) + '</td><td class="num">' + won(x.s) + '</td><td class="num">' + won(x.b) + '</td>' +
           '<td class="num strong' + (x.p < 0 ? ' neg' : '') + '">' + won(x.p) + '</td><td class="num' + (x.r != null && x.r < 0 ? ' neg' : '') + '">' + pctText(x.r) + '</td>' +
           (hasCmp ? '<td class="num" title="' + esc(cr.label) + ' ' + pctText(x.cr) + '">' + (x.dr == null ? '<span class="dl">신규</span>' : deltaHtml(x.dr, '%p', true)) + '</td>' : '') +
@@ -2429,6 +2682,7 @@
     });
     var partsOf = {};
     list.forEach(function (x) { if (x.parts) partsOf[x.k] = x.parts; });
+    $$('#anGroup [data-cc]').forEach(function (b) { b.onclick = function (e) { e.stopPropagation(); openCustCard(b.dataset.cc); }; });
     $$('#anGroup tr.pick').forEach(function (tr) {
       tr.onclick = function () {
         var k = tr.dataset.k;

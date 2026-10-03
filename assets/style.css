@@ -455,7 +455,49 @@ label.btn { cursor: pointer; }
 .pbar i { display: block; height: 100%; background: #2A9DB0; border-radius: 999px; }
 .pbar i.loss { background: #D2601A; }
 
+/* ── 단가 이상치 · 매출처 카드 · 보고서 ── */
+.anom-card { border-color: rgba(240, 122, 34, .3); }
+.cc-btn { border: 1px solid var(--line-strong); background: var(--panel); border-radius: 6px; font-size: 11px; font-weight: 700; padding: 1px 7px; margin-left: 4px; cursor: pointer; color: var(--ink-2); vertical-align: 1px; }
+.cc-btn:hover { background: var(--ink); color: #fff; border-color: var(--ink); }
+.kpis.mini { grid-template-columns: repeat(4, 1fr); margin-top: 0; }
+.kpis.mini .kpi { padding: 12px 14px; box-shadow: none; animation: none; }
+.kpis.mini .kpi .v { font-size: 19px; }
+.cc-charts { display: grid; grid-template-columns: 1.6fr 1fr; gap: 18px; margin-top: 16px; }
+.cc-charts h3, .cc-routes h3 { font-size: 14px; margin-bottom: 6px; }
+.cc-routes { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 16px; }
+table.data.mini { font-size: 12.5px; }
+table.data.mini td, table.data.mini th { padding: 7px 8px; }
+.modal.wide { max-width: 980px; }
+#report { position: absolute; inset: 0 0 auto 0; min-height: 100vh; background: var(--bg-2); z-index: 40; padding: 0 16px 40px; }
+body.report-open #app, body.report-open .toasts { display: none; }
+.rpt-bar { position: sticky; top: 0; z-index: 2; display: flex; gap: 8px; align-items: center; max-width: 900px; margin: 0 auto; padding: 12px 0; background: var(--bg-2); }
+.rpt-page { max-width: 900px; margin: 0 auto; background: #fff; border-radius: 6px; box-shadow: var(--shadow-pop); padding: 0 36px 28px; }
+.rpt-head { margin: 0 -36px 18px; }
+.rpt-title { display: flex; justify-content: space-between; align-items: flex-start; padding: 22px 36px 0; }
+.rpt-title h1 { font-size: 24px; margin: 4px 0 6px; }
+.rpt-title .logo { width: 44px; height: 44px; }
+.rpt-page section { margin-top: 22px; break-inside: avoid; }
+.rpt-page h2 { font-size: 15px; margin: 0 0 8px; padding-bottom: 6px; border-bottom: 2px solid var(--ink); }
+table.data.rpt { font-size: 12.5px; }
+table.data.rpt td, table.data.rpt th { padding: 6px 8px; }
+table.data.rpt tbody tr { animation: none; }
+.rpt-charts { display: grid; grid-template-columns: 1.5fr 1fr; gap: 20px; }
+.rpt-two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.rpt-foot { margin-top: 26px; padding-top: 10px; border-top: 1px solid var(--line); }
+@media print {
+  @page { size: A4; margin: 12mm; }
+  body { background: #fff !important; }
+  .no-print { display: none !important; }
+  #report { position: static; padding: 0; background: #fff; }
+  .rpt-page { box-shadow: none; max-width: none; padding: 0; border-radius: 0; }
+  .rpt-head { margin: 0 0 14px; }
+  .rpt-title { padding: 14px 0 0; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; animation: none !important; }
+}
+
 @media (max-width: 980px) {
+  .cc-charts, .cc-routes, .rpt-charts, .rpt-two { grid-template-columns: 1fr; }
+  .kpis.mini { grid-template-columns: repeat(2, 1fr); }
   .kpis { grid-template-columns: repeat(2, 1fr); }
   .an-charts { grid-template-columns: 1fr; }
   .qedit { grid-template-columns: 1fr; }
