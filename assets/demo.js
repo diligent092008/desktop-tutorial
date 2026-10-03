@@ -32,12 +32,12 @@
   store.settings = joilMergeSettings(store.settings);
   var sessions = loadSessions();
   var anData = {}, anIndex = [], anMap = [], anLog = [], anRules = [];
-  var diesel = (function () { // 데모용 가짜 유가 (최근 120일)
+  var dieselRows = (function () { // 데모용 가짜 유가 (최근 120일)
     var out = [], p = 1480, d = new Date(); d.setDate(d.getDate() - 120);
     for (var i = 0; i < 120; i++) { d.setDate(d.getDate() + 1); p += Math.sin(i / 9) * 2.2 + (i % 7 === 0 ? -1.5 : 0.6); out.push([d.toISOString().slice(0, 10), Math.round(p * 100) / 100, '데모']); }
     return out;
   })();
-  function dieselStatus() { return { count: diesel.length, first: diesel[0][0], last: diesel[diesel.length - 1][0], lastPrice: diesel[diesel.length - 1][1], triggerOn: false, hasKey: !!store.keys.opinet }; } // 분석 데이터는 용량이 커서 메모리에만 (새로고침하면 사라짐)
+  function dieselStatus() { return { count: dieselRows.length, first: dieselRows[0][0], last: dieselRows[dieselRows.length - 1][0], lastPrice: dieselRows[dieselRows.length - 1][1], triggerOn: false, hasKey: !!store.keys.opinet }; } // 분석 데이터는 용량이 커서 메모리에만 (새로고침하면 사라짐)
   function permsOf(u) { return u.role === 'admin' ? ['quote', 'analysis', 'admin'] : (u.perms || ['quote']); }
   function needPerm(me, p) { if (me.perms.indexOf(p) === -1) fail(p === 'analysis' ? '분석 메뉴 권한이 없습니다. 관리자에게 요청하세요.' : '견적 메뉴 권한이 없습니다. 관리자에게 요청하세요.'); }
 
@@ -143,7 +143,7 @@
     var s = store.settings;
     if (me.mustChange && ['me', 'logout', 'changePassword', 'publicSettings'].indexOf(req.action) === -1) fail('임시 비밀번호입니다. 비밀번호를 먼저 변경하세요.');
     if (['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete',
-      'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies'].indexOf(req.action) !== -1) needPerm(me, 'quote');
+      'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent'].indexOf(req.action) !== -1) needPerm(me, 'quote');
     if (req.action === 'analysis.index' || req.action === 'analysis.load') needPerm(me, 'analysis');
     switch (req.action) {
       case 'analysis.index':
@@ -218,6 +218,7 @@
         }
         uq.name = uf.name; uq.client = uf.client; uq.memo = uf.memo; uq.status = uf.status; uq.updatedAt = today(); save();
         return { quote: publicQuote(uq) };
+      case 'diesel.recent': return { now: diesel(), rows: dieselRows.slice(-60).map(function (r) { return [r[0], r[1]]; }) };
       case 'docs.list': return { docs: docs.slice() };
       case 'docs.upload':
         var dm = docMeta(req);
@@ -273,12 +274,12 @@
         (req.rules || []).forEach(function (r) { if (!String(r.word || '').trim()) fail('단어가 비어 있는 규칙이 있습니다.'); if (r.action === 'class' && !String(r.cat || '').trim()) fail('분류 규칙은 분류 이름이 필요합니다.'); });
         anRules = JSON.parse(JSON.stringify(req.rules || [])).map(function (r) { r.word = String(r.word).trim(); r.on = r.on !== false; return r; });
         return { rules: anRules };
-      case 'admin.dieselHistory': return { rows: diesel.slice(), status: dieselStatus() };
+      case 'admin.dieselHistory': return { rows: dieselRows.slice(), status: dieselStatus() };
       case 'admin.dieselRecordNow': fail('데모 모드에서는 오피넷을 부르지 않습니다.');
       case 'admin.dieselImport':
-        var byD = {}; diesel.forEach(function (r) { byD[r[0]] = r; });
+        var byD = {}; dieselRows.forEach(function (r) { byD[r[0]] = r; });
         (req.rows || []).forEach(function (r) { if (/^\d{4}-\d{2}-\d{2}$/.test(r[0]) && r[1] > 0) byD[r[0]] = [r[0], Number(r[1]), '엑셀 가져오기']; });
-        diesel = Object.keys(byD).sort().map(function (k) { return byD[k]; });
+        dieselRows = Object.keys(byD).sort().map(function (k) { return byD[k]; });
         return { count: (req.rows || []).length, status: dieselStatus() };
       case 'analysis.accessLog': return { logs: anLog.slice(0, 50) };
       case 'admin.saveCompanies':

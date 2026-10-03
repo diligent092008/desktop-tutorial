@@ -119,7 +119,7 @@ function handle_(req) {
   }
 
   var QUOTE_ACTIONS = ['dieselPrice', 'quote', 'quoteBatch', 'history.list', 'history.get', 'quotes.save', 'quotes.list', 'quotes.get', 'quotes.update', 'quotes.delete',
-    'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies'];
+    'docs.list', 'docs.upload', 'docs.update', 'docs.get', 'docs.zip', 'docs.delete', 'addr.list', 'companies', 'diesel.recent'];
   if (QUOTE_ACTIONS.indexOf(action) !== -1) requirePerm_(session, 'quote');
   if (action === 'analysis.index' || action === 'analysis.load') requirePerm_(session, 'analysis');
   switch (action) {
@@ -143,6 +143,7 @@ function handle_(req) {
     case 'docs.delete': return docsDelete_(session, req.id);
     case 'addr.list': return addrList_();
     case 'companies': return { companies: companies_() };
+    case 'diesel.recent': return dieselRecent_(60);
   }
 
   if (session.role !== 'admin') throw new Error('관리자만 사용할 수 있습니다.');
@@ -1446,6 +1447,12 @@ function dieselStatus_() {
 function dieselHistory_() {
   var h = dieselHistoryMap_();
   return { rows: Object.keys(h).sort().map(function (d) { return [d, h[d].price, h[d].source]; }), status: dieselStatus_() };
+}
+
+/** 홈 화면용: 오늘 견적에 쓰는 경유가 + 최근 n일 기록 */
+function dieselRecent_(n) {
+  var h = dieselHistoryMap_(), dates = Object.keys(h).sort().slice(-n);
+  return { now: dieselPrice_(), rows: dates.map(function (d) { return [d, h[d].price]; }) };
 }
 
 /** 오피넷 사이트에서 내려받은 과거 유가 엑셀을 화면에서 읽어 보낸 것 */

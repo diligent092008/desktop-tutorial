@@ -10,7 +10,7 @@
     token: storage('get', 'joil-token'),
     user: null,
     pub: null,
-    view: 'calc',
+    view: 'home',
     calc: { origin: '', dest: '', dieselMode: null, dieselPrice: '', baseTon: null, tons: null, result: null },
     hist: { days: 30, type: '', userId: '', q: '', logs: null, users: null, detail: null, detailData: null },
     quotes: { q: '', status: '', list: null, detail: null, detailData: null },
@@ -51,7 +51,7 @@
     if (u.role === 'admin') return true;
     return (u.perms || ['quote']).indexOf(perm) !== -1;
   }
-  function defaultView() { return can('quote') ? 'calc' : can('analysis') ? 'analysis' : 'none'; }
+  function defaultView() { return can('quote') || can('analysis') ? 'home' : 'none'; }
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
 
@@ -59,7 +59,7 @@
    * - 조회성 요청(READ)은 오류·지연 시 1번 자동 재시도, 같은 요청이 동시에 겹치면 하나로 합침
    * - 저장·변경 요청은 중복 실행을 막기 위해 재시도하지 않음
    */
-  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory', 'docs.list', 'docs.get', 'addr.list', 'companies'];
+  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory', 'docs.list', 'docs.get', 'addr.list', 'companies', 'diesel.recent'];
   var TIMEOUT_MS = 25000;
   var inflight = {};
 
@@ -248,6 +248,7 @@
 
   function navItems() {
     var items = [];
+    if (can('quote') || can('analysis')) items.push(['home', '홈']);
     if (can('quote')) items.push(['calc', '단건 계산'], ['bulk', '대량 계산'], ['history', '조회기록'], ['quotes', '견적모음'], ['docs', '서류함']);
     if (can('analysis')) items.push(['analysis', '분석']);
     if (state.user.role === 'admin') items.push(['admin', '관리자']);
@@ -256,7 +257,7 @@
 
   function render() {
     if (!state.user) return renderLogin();
-    if (state.pub && !navItems().some(function (n) { return n[0] === state.view; })) state.view = defaultView();
+    if (state.pub && state.view !== 'help' && !navItems().some(function (n) { return n[0] === state.view; })) state.view = defaultView();
     if (!state.pub) { app.innerHTML = '<div class="login-wrap"><div class="muted">불러오는 중…</div></div>'; return; }
     app.innerHTML =
       '<header class="topbar"><div class="stripe-bar"></div><div class="row">' +
@@ -268,6 +269,7 @@
       (state.user.role === 'admin' ? '<span class="role-badge">ADMIN</span>' : '') +
       '<span class="avatar">' + esc(String(state.user.name || state.user.id).charAt(0)) + '</span>' +
       '<span class="name">' + esc(state.user.name) + '</span>' +
+      '<button class="btn btn-ghost btn-sm' + (state.view === 'help' ? ' on' : '') + '" data-act="help">도움말</button>' +
       '<button class="btn btn-ghost btn-sm" data-act="pw">비밀번호</button>' +
       '<button class="btn btn-sm" data-act="logout">로그아웃</button></div>' +
       '</div></header><main id="main"></main>';
@@ -291,6 +293,8 @@
       clearSession(); render();
     };
     $('[data-act="pw"]').onclick = function () { openChangePassword(false); };
+    $('[data-act="help"]').onclick = function () { state.view = 'help'; render(); window.scrollTo(0, 0); };
+    $('.topbar .brand').onclick = function () { if (state.view !== 'home' && navItems().some(function (n) { return n[0] === 'home'; })) { state.view = 'home'; render(); } };
 
     if (state.view === 'none') {
       $('#main').innerHTML = '<div class="card empty"><div><div class="big-stripes"></div><h3>사용할 수 있는 메뉴가 없어요</h3><p class="muted" style="margin:0">관리자에게 메뉴 권한을 요청하세요.</p></div></div>';
@@ -302,6 +306,8 @@
     else if (state.view === 'history') renderHistory();
     else if (state.view === 'quotes') renderQuotes();
     else if (state.view === 'docs') renderDocs();
+    else if (state.view === 'help') renderHelp();
+    else if (state.view === 'home') renderHome();
     else renderCalc();
   }
 
@@ -1929,7 +1935,7 @@
 
   /** 날짜 축 선 그래프: 7일 넘게 비어 있는 구간은 선을 끊음 */
   function priceChart(data) {
-    var W = 760, H = 260, L = 50, R = 16, T = 14, B = 26;
+    var W = chartW(760), H = 260, L = 50, R = 16, T = 14, B = 26;
     var day = function (d) { return Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 86400000; };
     var t0 = day(data[0].d), t1 = day(data[data.length - 1].d);
     var vals = data.map(function (d) { return d.p; });
@@ -2190,7 +2196,7 @@
       '<tr><td class="left">매출이 평소보다 싼 오더</td><td class="num">' + won(sellAnom.length) + '건</td><td class="num neg">−' + won(sumDiff(sellAnom)) + '원</td></tr></tbody></table>' +
       (buyAnom.length ? '<p class="small muted" style="margin:8px 0 4px">매입 초과 상위 5건</p>' + tbl(buyAnom.slice(0, 5), [['날짜', function (x) { return '<td class="left small">' + esc(x.r[C.date]) + '</td>'; }, 1], ['매출처', function (x) { return '<td class="left">' + esc(x.r[C.disp]) + '</td>'; }, 1], ['경로', function (x) { return '<td class="left">' + esc(x.r[C.from] + ' → ' + x.r[C.to] + ' · ' + x.r[C.weight]) + '</td>'; }, 1], ['매입', function (x) { return numCell(won(x.r[C.buys])); }], ['보통', function (x) { return numCell(won(Math.round(x.base))); }], ['기사', function (x) { return '<td class="left small">' + esc(x.r[C.driver]) + '</td>'; }, 1]]) : '') +
       '</section>' +
-      '<footer class="rpt-foot muted small">조일ver1 · 이익 = 매출후불 − 매입후불 · 관리자가 정한 제외 규칙과 숨긴 매출처는 빠진 숫자입니다.</footer></div>';
+      '<footer class="rpt-foot muted small">조일ver1 · 이익 = 매출후불 − 매입후불</footer></div>';
     var wrap = document.createElement('div');
     wrap.id = 'report';
     wrap.innerHTML = html;
@@ -2471,9 +2477,12 @@
     bindChartHover($('#anRate'), data, function (d) { return '<b>' + d.m + '</b><br>이익률 ' + pctText(d.rate) + '<br>이익 ' + won(d.p) + lyText(d); });
   }
 
+  /** 휴대폰처럼 좁은 화면에서는 차트 폭을 줄여 글자가 너무 작아지지 않게 */
+  function chartW(w) { var vw = window.innerWidth || 1000; return vw < 640 ? Math.min(w, 420) : w; }
+
   /** 월별 이익 막대 (손실은 아래로) + 전년 같은 달 이익 표시(가로 눈금) */
   function profitChart(data) {
-    var W = 640, H = 240, L = 52, R = 8, T = 10, B = 26;
+    var W = chartW(640), H = 240, L = 52, R = 8, T = 10, B = 26;
     var vals = [];
     data.forEach(function (d) { vals.push(d.p); if (d.ly.has) vals.push(d.ly.p); });
     var maxV = niceMax(Math.max.apply(null, vals.concat([1]))), minV = Math.min.apply(null, vals.concat([0]));
@@ -2553,7 +2562,7 @@
   }
 
   function columnChart(data) {
-    var W = 640, H = 240, L = 52, R = 8, T = 10, B = 26;
+    var W = chartW(640), H = 240, L = 52, R = 8, T = 10, B = 26;
     var max = niceMax(Math.max.apply(null, data.map(function (d) { return Math.max(d.s, d.b); }).concat([1])));
     var n = data.length, band = (W - L - R) / Math.max(n, 1);
     var bw = Math.min(16, Math.max(3, (band - 8) / 2));
@@ -3819,7 +3828,7 @@
     var desc = [l.from, l.to].filter(Boolean).join(' → ') + (l.weight ? ' · ' + l.weight : '');
     box.innerHTML = '<div class="card qlink"><div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:12px"><div><div class="eyebrow">Actual · 실적 연결</div>' +
       '<h3>' + esc(l.cust) + (desc ? ' <span class="muted small">' + esc(desc) + '</span>' : '') + '</h3>' +
-      '<p class="muted small" style="margin:4px 0 0">' + (l.since ? esc(l.since) + '부터' : '전체 기간') + ' · 운송 오더만 (제외·분류 항목 빼고)</p></div>' +
+      '<p class="muted small" style="margin:4px 0 0">' + (l.since ? esc(l.since) + '부터' : '전체 기간') + ' · 운송 오더 기준</p></div>' +
       '<div class="actions"><button class="btn btn-sm" id="qlGo">분석에서 보기</button><button class="btn btn-sm" id="qlEdit">연결 바꾸기</button><button class="btn btn-sm btn-ghost" id="qlOff">연결 해제</button></div></div>' +
       (t.n ? '<div class="kpis mini">' +
         '<div class="kpi"><div class="k">실적 건수</div><div class="v num">' + won(t.n) + '건</div><div class="s">' + months.length + '개월</div></div>' +
@@ -3910,6 +3919,230 @@
         };
       }
     });
+  }
+
+  /* ───────── 홈 (C4) ───────── */
+  /* 권한에 맞는 카드만: 오늘 경유가 · 이번 달 실적과 확인해 볼 곳 · 만료 임박 서류 · 최근 내 견적·조회 */
+
+  function renderHome() {
+    var hq = can('quote'), ha = can('analysis');
+    var d = new Date(), wd = '일월화수목금토'.charAt(d.getDay());
+    $('#main').innerHTML =
+      '<div class="home-hero card"><div><div class="eyebrow">' + esc(today()) + ' (' + wd + ')</div><h2>' + esc(state.user.name) + '님, 안녕하세요</h2></div>' +
+      (hq ? '<form class="home-quick" id="homeQuick" autocomplete="off"><input class="input" id="hqFrom" list="addrList" placeholder="상차지"><span class="hq-arrow">→</span><input class="input" id="hqTo" list="addrList" placeholder="하차지"><button class="btn btn-accent" type="submit">바로 계산</button></form>' : '') +
+      '</div>' +
+      '<div class="home-grid">' +
+      (hq ? '<div class="card home-card" id="hcDiesel"><div class="eyebrow">Diesel · 오늘 경유가</div><p class="muted"><span class="spinner dark"></span></p></div>' : '') +
+      (ha ? '<div class="card home-card wide2" id="hcAn"><div class="eyebrow">This month · 이번 달 실적</div><p class="muted"><span class="spinner dark"></span> 분석 데이터 불러오는 중…</p></div>' : '') +
+      (hq ? '<div class="card home-card" id="hcDocs"><div class="eyebrow">Documents · 만료 임박 서류</div><p class="muted"><span class="spinner dark"></span></p></div>' : '') +
+      (hq ? '<div class="card home-card" id="hcQuotes"><div class="eyebrow">Quotes · 최근 내 견적</div><p class="muted"><span class="spinner dark"></span></p></div>' : '') +
+      (hq ? '<div class="card home-card" id="hcHist"><div class="eyebrow">History · 최근 조회 (7일)</div><p class="muted"><span class="spinner dark"></span></p></div>' : '') +
+      '</div>';
+    var alive = function () { return state.view === 'home'; };
+    var fail = function (sel) {
+      return function (err) {
+        var el = $(sel); if (!el || !alive()) return;
+        $$('.spinner', el).forEach(function (s) { s.parentNode.remove(); });
+        el.insertAdjacentHTML('beforeend', '<p class="small" style="color:var(--red);margin:0">' + esc(err.message) + '</p>');
+      };
+    };
+    if (hq) {
+      ensureAddrList();
+      $('#homeQuick').onsubmit = function (e) {
+        e.preventDefault();
+        var o = $('#hqFrom').value.trim(), t = $('#hqTo').value.trim();
+        if (!o || !t) return toast('상차지와 하차지를 모두 입력하세요.', 'err');
+        state.calc.origin = o; state.calc.dest = t; state.calc.result = null;
+        state.view = 'calc'; render();
+        $('#calcForm').requestSubmit ? $('#calcForm').requestSubmit() : $('#calcBtn').click();
+      };
+      api('diesel.recent').then(function (r) { if (alive()) homeDiesel(r); }).catch(fail('#hcDiesel'));
+      (state.docs.list ? Promise.resolve({ docs: state.docs.list }) : api('docs.list')).then(function (r) { state.docs.list = r.docs; if (alive()) homeDocs(r.docs); }).catch(fail('#hcDocs'));
+      api('quotes.list').then(function (r) { state.quotes.list = r.quotes; if (alive()) homeQuotes(r.quotes); }).catch(fail('#hcQuotes'));
+      api('history.list', { days: 7, type: '', userId: state.user.id, q: '' }).then(function (r) { if (alive()) homeHist(r.logs); }).catch(fail('#hcHist'));
+    }
+    if (ha) loadAnalysis().then(function () { if (alive()) homeAn(); }).catch(fail('#hcAn'));
+  }
+
+  function sparkline(vals, w, h) {
+    if (vals.length < 2) return '';
+    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals), span = hi - lo || 1;
+    var pts = vals.map(function (v, i) { return (i / (vals.length - 1) * w).toFixed(1) + ',' + (h - 3 - (v - lo) / span * (h - 6)).toFixed(1); });
+    var last = pts[pts.length - 1].split(',');
+    return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true">' +
+      '<path d="M' + pts.join('L') + 'L' + w + ',' + h + 'L0,' + h + 'Z" fill="' + AN_SALES_COLOR + '" opacity=".1"/>' +
+      '<path d="M' + pts.join('L') + '" fill="none" stroke="' + AN_SALES_COLOR + '" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>' +
+      '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="3" fill="' + AN_SALES_COLOR + '"/></svg>';
+  }
+
+  function homeDiesel(r) {
+    var el = $('#hcDiesel'), rows = r.rows || [];
+    var lastP = rows.length ? rows[rows.length - 1][1] : null;
+    var ago = rows.filter(function (x) { return x[0] <= addDays(rows.length ? rows[rows.length - 1][0] : today(), -30); });
+    var base = ago.length ? ago[ago.length - 1][1] : (rows[0] && rows[0][1]);
+    var diff = lastP != null && base ? lastP - base : null;
+    el.innerHTML = '<div class="eyebrow">Diesel · 오늘 경유가</div>' +
+      '<div class="home-big num">' + won(r.now.price) + '<span class="small"> 원/L</span></div>' +
+      '<div class="small muted">' + esc(r.now.source) + ' · 견적 밀크런 기준</div>' +
+      (rows.length > 1 ? sparkline(rows.map(function (x) { return x[1]; }), 300, 64) +
+        '<div class="row-between small"><span class="muted">최근 ' + rows.length + '일 전국 평균</span>' + (diff != null ? '<span>30일 전보다 ' + deltaHtml(diff / base * 100, '%', false) + '</span>' : '') + '</div>'
+        : '<p class="small muted" style="margin:10px 0 0">유가 기록이 쌓이면 추이가 보여요.</p>');
+  }
+  function addDays(d, k) { var t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + k); return t.toISOString().slice(0, 10); }
+
+  function homeAn() {
+    var el = $('#hcAn'), an = state.an, ms = anMonths();
+    if (!ms.length) { el.innerHTML = '<div class="eyebrow">This month · 이번 달 실적</div><p class="muted" style="margin:0">아직 올라온 분석 데이터가 없어요.</p>'; return; }
+    var m = ms[ms.length - 1], pm = addMonths(m, -1), ly = addMonths(m, -12);
+    var by = function (month) {
+      var t = { n: 0, s: 0, b: 0 }, cust = {};
+      an.rows.forEach(function (r) {
+        if (r[C.hidden] || r[C.cat] || r[C.date].slice(0, 7) !== month) return;
+        t.n++; t.s += r[C.sales]; t.b += r[C.buys];
+        var x = cust[r[C.disp]] || (cust[r[C.disp]] = { k: r[C.disp], n: 0, s: 0, b: 0 }); x.n++; x.s += r[C.sales]; x.b += r[C.buys];
+      });
+      t.p = t.s - t.b; t.r = pct(t.p, t.s); t.cust = cust;
+      return t;
+    };
+    var c = by(m), p = ms.indexOf(pm) !== -1 ? by(pm) : null, y = ms.indexOf(ly) !== -1 ? by(ly) : null;
+    var watch = [];
+    if (p) {
+      watch = Object.keys(c.cust).map(function (k) {
+        var a = c.cust[k], b = p.cust[k]; if (!b) return null;
+        a.p = a.s - a.b; a.r = pct(a.p, a.s); b.p = b.s - b.b; b.r = pct(b.p, b.s);
+        a.dr = a.r != null && b.r != null ? a.r - b.r : null; a.turned = b.p > 0 && a.p < 0;
+        return a;
+      }).filter(function (x) { return x && x.s >= an.alert.minSales && (x.turned || (x.dr != null && x.dr <= -an.alert.drop)); })
+        .sort(function (a, b) { return (a.turned === b.turned ? 0 : a.turned ? -1 : 1) || a.dr - b.dr; });
+    }
+    var kpi = function (label, v, neg, d1, d2) {
+      return '<div class="kpi"><div class="k">' + label + '</div><div class="v num' + (neg ? ' neg' : '') + '">' + v + '</div><div class="s">' +
+        (d1 != null ? d1 + ' <span class="muted">전월</span>' : '') + (d2 != null ? ' · ' + d2 + ' <span class="muted">전년</span>' : '') + '</div></div>';
+    };
+    el.innerHTML = '<div class="row-between" style="flex-wrap:wrap;gap:8px"><div><div class="eyebrow">This month · 최근 실적</div><h3>' + esc(m) + ' 전체 사업자</h3></div><button class="btn btn-sm" id="hcAnGo">분석 열기</button></div>' +
+      '<div class="kpis mini" style="margin-top:12px">' +
+      kpi('이익', won(c.p) + '원', c.p < 0, p ? deltaHtml(deltaPct(c.p, p.p), '%', true) : null, y ? deltaHtml(deltaPct(c.p, y.p), '%', true) : null) +
+      kpi('이익률', pctText(c.r), c.r < 0, p && c.r != null && p.r != null ? deltaHtml(c.r - p.r, '%p', true) : null, y && c.r != null && y.r != null ? deltaHtml(c.r - y.r, '%p', true) : null) +
+      kpi('매출', won(c.s) + '원', false, p ? deltaHtml(deltaPct(c.s, p.s), '%', true) : null, null) +
+      kpi('건수', won(c.n) + '건', false, p ? deltaHtml(deltaPct(c.n, p.n), '%', true) : null, null) + '</div>' +
+      (p ? '<h4 class="home-sub">확인해 볼 곳 <span class="' + (watch.length ? 'neg' : 'muted') + '">' + watch.length + '곳</span> <span class="small muted">전월보다 이익률 ' + an.alert.drop + '%p 이상 하락 또는 적자 전환</span></h4>' +
+        (watch.length ? '<ul class="home-list">' + watch.slice(0, 5).map(function (x) {
+          return '<li><button data-cust="' + esc(x.k) + '"><span>' + (x.turned ? '<span class="badge down">적자 전환</span> ' : '') + esc(x.k) + '</span><span class="num">' + pctText(x.r) + ' ' + deltaHtml(x.dr, '%p', true) + '</span></button></li>';
+        }).join('') + '</ul>' + (watch.length > 5 ? '<p class="hint" style="margin:6px 0 0">외 ' + (watch.length - 5) + '곳은 분석 화면에서 볼 수 있어요.</p>' : '') : '<p class="muted small" style="margin:0">해당하는 매출처가 없어요. 👍</p>')
+        : '<p class="muted small" style="margin:12px 0 0">전월 데이터가 올라오면 비교가 나와요.</p>');
+    var goAn = function (cust) {
+      var f = an.f; f.from = m; f.to = m; f.biz = []; f.q = ''; f.sel = cust ? { cust: [cust] } : {}; an.cmp = 'prev';
+      if (cust) { an.dim = 'route'; an.sort = { key: 'profit', dir: 1 }; }
+      state.view = 'analysis'; render();
+    };
+    $('#hcAnGo').onclick = function () { goAn(null); };
+    $$('#hcAn [data-cust]').forEach(function (b) { b.onclick = function () { goAn(b.dataset.cust); }; });
+  }
+
+  function homeDocs(docs) {
+    var el = $('#hcDocs');
+    var list = docs.map(function (d) { return { d: d, n: docDays(d) }; }).filter(function (x) { return x.n != null && x.n <= 60; }).sort(function (a, b) { return a.n - b.n; });
+    el.innerHTML = '<div class="row-between"><div class="eyebrow">Documents · 만료 임박 서류</div><button class="btn btn-sm btn-ghost" data-go="docs">서류함</button></div>' +
+      (list.length ? '<ul class="home-list">' + list.slice(0, 6).map(function (x) {
+        return '<li><button data-doc="' + esc(x.d.id) + '"><span>' + esc((x.d.biz ? x.d.biz + ' · ' : '') + x.d.name) + '</span><span>' +
+          (x.n < 0 ? '<span class="badge exp-x">만료됨</span>' : '<span class="badge ' + (x.n <= 30 ? 'exp-soon' : 'off') + '">D-' + x.n + '</span>') + '</span></button></li>';
+      }).join('') + '</ul>' : '<p class="muted small" style="margin:8px 0 0">60일 안에 만료되는 서류가 없어요. (' + won(docs.length) + '개 보관 중)</p>');
+    $$('[data-doc]', el).forEach(function (b) { b.onclick = function () { var d = docs.filter(function (x) { return x.id === b.dataset.doc; })[0]; if (d) previewDoc(d); }; });
+    bindHomeGo(el);
+  }
+
+  function homeQuotes(list) {
+    var el = $('#hcQuotes');
+    var mine = list.filter(function (q) { return q.userId === state.user.id; }).sort(function (a, b) { return String(b.updatedAt || b.savedAt).localeCompare(String(a.updatedAt || a.savedAt)); });
+    el.innerHTML = '<div class="row-between"><div class="eyebrow">Quotes · 최근 내 견적</div><button class="btn btn-sm btn-ghost" data-go="quotes">견적모음</button></div>' +
+      (mine.length ? '<ul class="home-list">' + mine.slice(0, 5).map(function (q) {
+        return '<li><button data-q="' + esc(q.id) + '"><span><b>' + esc(q.name) + '</b>' + (q.client ? ' <span class="muted small">' + esc(q.client) + '</span>' : '') + '</span>' + statusPill(q.status) + '</button></li>';
+      }).join('') + '</ul>' : '<p class="muted small" style="margin:8px 0 0">아직 저장한 견적이 없어요.</p>');
+    $$('[data-q]', el).forEach(function (b) { b.onclick = function () { state.quotes.detail = b.dataset.q; state.quotes.detailData = null; state.view = 'quotes'; render(); window.scrollTo(0, 0); }; });
+    bindHomeGo(el);
+  }
+
+  function homeHist(logs) {
+    var el = $('#hcHist');
+    el.innerHTML = '<div class="row-between"><div class="eyebrow">History · 최근 조회 (7일)</div><button class="btn btn-sm btn-ghost" data-go="history">조회기록</button></div>' +
+      (logs.length ? '<ul class="home-list">' + logs.slice(0, 6).map(function (l) {
+        return '<li><button data-h="' + esc(l.hasSnapshot ? l.recordId : '') + '"><span class="ellip">' + esc(l.from) + ' → ' + esc(l.to) + '</span><span class="small muted">' + esc(String(l.at).slice(5, 16)) + '</span></button></li>';
+      }).join('') + '</ul>' : '<p class="muted small" style="margin:8px 0 0">최근 7일 동안 조회한 기록이 없어요.</p>');
+    $$('[data-h]', el).forEach(function (b) { b.onclick = function () { var h = state.hist; h.logs = null; h.detail = b.dataset.h || null; h.detailData = null; state.view = 'history'; render(); window.scrollTo(0, 0); }; });
+    bindHomeGo(el);
+  }
+
+  function bindHomeGo(el) { $$('[data-go]', el).forEach(function (b) { b.onclick = function () { state.view = b.dataset.go; render(); }; }); }
+
+  /* ───────── 도움말 (C2) ───────── */
+
+  function renderHelp() {
+    var hq = can('quote'), ha = can('analysis'), adm = state.user.role === 'admin';
+    var sec = [];
+    if (hq) sec.push(
+      ['calc', '단건 계산', [
+        '상차지와 하차지를 넣고 <b>견적 계산하기</b>를 누르면 거리와 톤수별 운임이 나옵니다. 주소는 도로명·지번·회사 이름 모두 됩니다.',
+        '<b>합계 = 타리프 + 지역 할증 + 하행 할증</b>입니다. 유류비·통행료는 합계에 들어가지 않고, 아래 <b>밀크런</b> 칸에 따로 나옵니다.',
+        '지역 할증은 상차지·하차지 양쪽에 걸리면 둘 다 더합니다. 하행 할증은 하차지가 더 남쪽이고 일정 거리 이상일 때 붙습니다.',
+        '오른쪽 <b>표시할 톤수</b>에서 필요한 톤수만 고를 수 있고, 고른 톤수는 다음에도 기억합니다.',
+        '입력칸을 누르면 예전에 조회한 주소가 추천으로 뜹니다.'
+      ]],
+      ['bulk', '대량 계산', [
+        '최대 1,000건까지 한 번에 계산합니다. <b>상차지 1곳 → 여러 하차지</b> 또는 엑셀에서 <b>상차지·하차지 두 열</b>을 복사해 붙여넣으세요.',
+        '실패한 줄은 빨간색으로 표시되고, <b>실패 n건 다시 계산</b>으로 그 줄만 다시 돌릴 수 있습니다. 주소를 고친 뒤 다시 하면 됩니다.',
+        '한 번 조회한 주소와 경로는 저장돼서 다음부터 훨씬 빨라집니다.'
+      ]],
+      ['qdoc', '견적서 만들기', [
+        '계산 결과, 조회기록 상세, 견적모음 상세에서 <b>견적서</b> 버튼을 누르세요.',
+        '보내는 사업자(조일물류·명일로지스·조일로지스)를 고르면 그 회사의 상호·사업자번호·주소·직인이 들어갑니다.',
+        '미리보기에서 <b>인쇄 / PDF 저장</b>을 누르고 인쇄 창의 대상을 <b>PDF로 저장</b>으로 바꾸면 PDF 파일이 됩니다. <b>엑셀</b>로도 받을 수 있어요.',
+        '대량 결과로 만들면 경로별 표가 들어갑니다. 가로 폭 때문에 톤수는 6개까지 넣을 수 있어요.'
+      ]],
+      ['history', '조회기록 · 견적모음', [
+        '모든 조회는 그때 금액 그대로 자동 보관됩니다(기본 90일). <b>상세보기</b>로 그때 결과를 다시 볼 수 있어요.',
+        '오래 둘 결과는 <b>견적으로 저장</b>하세요. 견적모음은 기간 제한 없이 남고, 거래처·메모·진행 상태(작성/제출/수주/미수주)를 적어 둘 수 있습니다.',
+        '<b>현재 단가로 다시 계산</b>을 누르면 같은 경로를 지금 단가로 다시 계산합니다.'
+      ].concat(ha ? ['견적모음 상세의 <b>실적 연결</b>에서 매출처·경로를 이어 두면, 수주 후 실제 월별 매출·매입·이익을 견적 단가와 비교해서 보여 줍니다.'] : [])],
+      ['docs', '서류함', [
+        '사업자등록증, 통장사본, 허가증, 보험증권, 견적서 양식 같은 회사 서류를 올려 두고 필요할 때 바로 미리보기·다운로드합니다.',
+        '만료일을 넣어 두면 30일 전부터 서류함과 홈 화면에 표시됩니다.',
+        '여러 개를 체크한 뒤 <b>선택 ZIP 다운로드</b>를 누르면 한 파일로 묶어 받을 수 있어요. (입찰 서류 제출 등)',
+        '파일은 회사 구글 드라이브의 비공개 폴더에 저장되고, 견적 메뉴 권한이 있는 사람만 볼 수 있습니다.'
+      ]]
+    );
+    if (ha) sec.push(
+      ['analysis', '매출매입 분석', [
+        '위쪽에서 <b>기간</b>과 <b>사업자</b>를 고르고, 아래 순위표에서 매출처·발지·착지·기사·차량·중량·경로 조합별로 나눠 볼 수 있습니다.',
+        '순위표의 줄을 누르면 그 조건으로 걸러지고, 위쪽 칩의 ✕를 누르면 풀립니다. <b>초기화</b>로 한 번에 풀 수도 있어요.',
+        '<b>이익 = 매출 − 매입</b>, <b>이익률 = 이익 ÷ 매출</b>입니다. 비교 기준은 직전 같은 기간 또는 전년 같은 기간 중에서 고릅니다.',
+        '<b>확인해 볼 곳</b>은 비교 기간보다 이익률이 떨어졌거나 적자로 바뀐 매출처입니다. 매출처 이름 옆 <b>상세</b>를 누르면 월별 추이와 주력·손실 경로가 나옵니다.',
+        '<b>단가 이상치</b>는 같은 발지·착지·중량의 보통 단가(중앙값)보다 매입이 비싸거나 매출이 싼 오더입니다.',
+        '<b>보고서</b> 버튼으로 지금 조건의 월간 보고서를 인쇄/PDF·엑셀로 만들 수 있습니다.'
+      ]]
+    );
+    if (adm) sec.push(
+      ['admin', '관리자', [
+        '<b>타리프 단가</b>는 엑셀에서 1~600km × 9톤수 표를 복사해 붙여넣고 저장합니다. 실제 단가는 이 화면에서만 넣으세요.',
+        '<b>계정 관리</b>에서 직원 계정을 만들고 메뉴 권한(견적·분석)을 정합니다. 퇴사자는 바로 <b>사용 중지</b>하세요.',
+        '<b>분석 데이터</b>에 매월 사업자별 엑셀을 올립니다. 같은 달을 다시 올리면 덮어씁니다.',
+        '<b>회사 정보</b>에 사업자 3곳의 정보와 직인을 넣으면 견적서에 들어갑니다.',
+        '서버 코드가 바뀌는 업데이트가 있으면 SETUP.md의 "업데이트가 나왔을 때" 순서대로 Apps Script에 붙여넣고 새 버전으로 배포하세요.'
+      ]]
+    );
+    sec.push(['account', '계정 · 보안', [
+      '오른쪽 위 <b>비밀번호</b>에서 언제든 바꿀 수 있습니다. 로그인은 브라우저 창을 닫으면 풀립니다.',
+      '비밀번호를 5번 틀리면 10분 동안 잠깁니다. 잊어버렸다면 관리자에게 초기화를 요청하세요.',
+      '화면이 이상하면 <b>Ctrl + F5</b>로 새로고침해 보세요.'
+    ]]);
+    $('#main').innerHTML =
+      '<div class="help-grid"><nav class="card rail help-rail">' + sec.map(function (s) { return '<button data-sec="' + s[0] + '">' + s[1] + '</button>'; }).join('') + '</nav>' +
+      '<div><div class="card help-head"><div class="eyebrow">Guide · 사용 안내</div><h2>조일ver1 사용법</h2><p class="muted small" style="margin:6px 0 0">' + esc(state.user.name) + '님이 쓸 수 있는 메뉴만 안내합니다.</p></div>' +
+      sec.map(function (s) {
+        return '<section class="card help-sec" id="help-' + s[0] + '"><h3>' + s[1] + '</h3><ul>' + s[2].map(function (t) { return '<li>' + t + '</li>'; }).join('') + '</ul>' +
+          (['calc', 'bulk', 'history', 'docs', 'analysis', 'admin'].indexOf(s[0]) !== -1 ? '<button class="btn btn-sm" data-open="' + (s[0] === 'history' ? 'quotes' : s[0]) + '">' + s[1].split(' · ')[0] + ' 열기 →</button>' : '') + '</section>';
+      }).join('') + '</div></div>';
+    $$('.help-rail button').forEach(function (b) { b.onclick = function () { var t = $('#help-' + b.dataset.sec); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
+    $$('.help-sec [data-open]').forEach(function (b) { b.onclick = function () { state.view = b.dataset.open === 'quotes' ? 'history' : b.dataset.open; render(); window.scrollTo(0, 0); }; });
   }
 
   /* ───────── 시작 ───────── */

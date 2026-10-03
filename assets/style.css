@@ -618,3 +618,55 @@ table.data.docs th.chk, table.data.docs td.chk { width: 34px; text-align: center
 }
 #dBiz, #qdBiz, #dBizSel { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 #dBiz button, #qdBiz button, #dBizSel button { white-space: nowrap; flex: none; }
+
+/* ── 홈 ── */
+.home-hero { display: flex; justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
+.home-hero h2 { margin: 2px 0 0; }
+.home-quick { display: flex; align-items: center; gap: 8px; flex: 1 1 520px; max-width: 640px; }
+.home-quick .input { flex: 1; min-width: 0; }
+.home-quick .btn { flex: none; }
+.hq-arrow { color: var(--muted); font-weight: 800; }
+.home-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.home-card { min-height: 170px; }
+.home-card.wide2 { grid-column: span 2; }
+.home-card h3 { margin: 2px 0 0; }
+.home-big { font-family: var(--font-display); font-size: 34px; font-weight: 800; margin: 8px 0 2px; }
+.spark { width: 100%; height: 64px; display: block; margin: 12px 0 6px; }
+.home-sub { margin: 16px 0 8px; font-size: 14px; }
+.home-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.home-list li + li { border-top: 1px solid var(--line); }
+.home-list button { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 2px; background: none; border: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; border-radius: 8px; }
+.home-list button:hover { background: var(--panel-2); }
+.home-list button > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-list button > span:last-child { flex: none; }
+.topbar .brand { cursor: pointer; }
+.user-chip .btn.on { background: var(--ink); color: #fff; }
+
+/* ── 도움말 ── */
+.help-grid { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; align-items: start; }
+.help-rail { position: sticky; top: 90px; }
+.help-head { margin-bottom: 16px; }
+.help-sec { margin-bottom: 16px; scroll-margin-top: 90px; }
+.help-sec h3 { margin: 0 0 10px; }
+.help-sec ul { margin: 0 0 12px; padding-left: 20px; line-height: 1.75; }
+.help-sec li + li { margin-top: 4px; }
+
+@media (max-width: 980px) {
+  .home-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .help-grid { grid-template-columns: 1fr; }
+  .help-rail { position: static; display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 4px; }
+  .help-rail button { flex: none; width: auto; }
+}
+@media (max-width: 640px) {
+  .home-grid { grid-template-columns: minmax(0, 1fr); }
+  .home-card.wide2 { grid-column: auto; }
+  .home-quick { flex-wrap: wrap; flex-basis: 100%; }
+  .home-quick .input { flex: 1 1 100%; }
+  .hq-arrow { display: none; }
+  .home-quick .btn { width: 100%; }
+}
+
+@media (max-width: 640px) {
+  .kpi .v, .kpis.mini .kpi .v { font-size: 18px; white-space: nowrap; }
+  .kpi .v .small { font-size: 12px; }
+}
