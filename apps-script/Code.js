@@ -33,6 +33,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('조일ver1')
     .addItem('초기 설정 (처음 한 번)', 'setup')
     .addItem('관리자 비밀번호 초기화', 'resetAdminPassword')
+    .addItem('유가 자동 기록 켜기', 'installDieselTrigger')
     .addToUi();
 }
 
@@ -136,7 +137,7 @@ function handle_(req) {
 
   if (session.role !== 'admin') throw new Error('관리자만 사용할 수 있습니다.');
   switch (action) {
-    case 'admin.bootstrap': cleanupSnapshots_(); return { settings: getSettings_(), keys: keyStatus_(), users: listUsers_(), logs: getLogs_(200), cache: cacheInfo_() };
+    case 'admin.bootstrap': cleanupSnapshots_(); return { settings: getSettings_(), keys: keyStatus_(), users: listUsers_(), logs: getLogs_(200), cache: cacheInfo_(), diesel: dieselStatus_() };
     case 'admin.getSettings': return { settings: getSettings_(), keys: keyStatus_() };
     case 'admin.saveSettings': return saveSettings_(req.settings);
     case 'admin.getTariff': return { tariff: readTariff_() };
@@ -153,6 +154,10 @@ function handle_(req) {
     case 'analysis.upload': return analysisUpload_(session, req);
     case 'analysis.delete': return analysisDelete_(req.key);
     case 'analysis.saveMap': return analysisSaveMap_(req.map);
+    case 'analysis.saveRules': return analysisSaveRules_(req.rules);
+    case 'admin.dieselHistory': return dieselHistory_();
+    case 'admin.dieselRecordNow': recordDieselDaily(); return dieselHistory_();
+    case 'admin.dieselImport': return dieselImport_(req.rows);
     case 'analysis.accessLog': return { logs: analysisAccessLog_(50) };
   }
   throw new Error('알 수 없는 요청입니다: ' + action);
@@ -1033,7 +1038,7 @@ function analysisIndex_(session) {
   });
   var log = cacheSheet_(SHEET_AN_LOG, ['일시', '아이디', '이름', '데이터 묶음 수']);
   log.appendRow([now_(), session.id, session.name, list.length]);
-  return { index: list, mapping: mapping, businesses: AN_BUSINESSES };
+  return { index: list, mapping: mapping, businesses: AN_BUSINESSES, rules: analysisRules_() };
 }
 
 /** 압축된 데이터 문자열을 그대로 돌려줌 (풀기는 브라우저에서) */
@@ -1129,6 +1134,32 @@ function analysisSaveMap_(map) {
   return { count: rows.length };
 }
 
+/* 제외·분류 규칙: 원본은 그대로 두고 보여줄 때만 적용 (스크립트 속성에 JSON) */
+var AN_RULE_FIELDS = ['any', 'cust', 'from', 'to', 'weight', 'car', 'driver', 'etc', 'note'];
+function analysisRules_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('AN_RULES');
+  return raw ? JSON.parse(raw) : [];
+}
+function analysisSaveRules_(rules) {
+  if (!Array.isArray(rules)) throw new Error('규칙 형식이 올바르지 않습니다.');
+  if (rules.length > 200) throw new Error('규칙은 200개까지 만들 수 있습니다.');
+  var clean = rules.map(function (r) {
+    var word = String(r.word || '').trim();
+    if (!word) throw new Error('단어가 비어 있는 규칙이 있습니다.');
+    if (AN_RULE_FIELDS.indexOf(r.field) === -1) throw new Error('칸 선택이 올바르지 않습니다.');
+    var action = r.action === 'class' ? 'class' : 'exclude';
+    var cat = String(r.cat || '').trim().slice(0, 30);
+    if (action === 'class' && !cat) throw new Error('분류 규칙은 분류 이름이 필요합니다: ' + word);
+    return {
+      on: r.on !== false, field: r.field, mode: ['eq', 'contains', 'starts'].indexOf(r.mode) !== -1 ? r.mode : 'contains',
+      word: word.slice(0, 100), biz: AN_BUSINESSES.indexOf(r.biz) !== -1 ? r.biz : '', action: action, cat: action === 'class' ? cat : '',
+      memo: String(r.memo || '').slice(0, 200)
+    };
+  });
+  PropertiesService.getScriptProperties().setProperty('AN_RULES', JSON.stringify(clean));
+  return { rules: clean };
+}
+
 function analysisAccessLog_(limit) {
   var sh = cacheSheet_(SHEET_AN_LOG, ['일시', '아이디', '이름', '데이터 묶음 수']);
   var last = sh.getLastRow();
@@ -1138,28 +1169,137 @@ function analysisAccessLog_(limit) {
 }
 
 /* ───────────── 경유가 (오피넷) ───────────── */
+/*
+ * 하루 한 번(아침 7시) 오피넷 "최근 7일 전국 평균 경유가"를 받아 유가기록 시트에 쌓습니다.
+ * 빠진 날이 있어도 7일치를 받으니 자동으로 메워지고, 견적 계산은 이 기록을 씁니다 (계산할 때마다 오피넷을 부르지 않음).
+ *  유가기록: 날짜(텍스트) | 경유(원/L) | 출처 | 기록시각
+ * 처음 한 번: Apps Script 편집기에서 installDieselTrigger 실행 (또는 시트 메뉴 조일ver1 → 유가 자동 기록 켜기)
+ */
 
+var SHEET_DIESEL = '유가기록';
+var DIESEL_HEADER = ['날짜', '경유(원/L)', '출처', '기록시각'];
+
+function dieselSheet_() { return cacheSheet_(SHEET_DIESEL, DIESEL_HEADER); }
+
+/** { 'YYYY-MM-DD': {price, source} } */
+function dieselHistoryMap_() {
+  var sh = dieselSheet_(), out = {};
+  if (sh.getLastRow() < 2) return out;
+  sh.getRange(2, 1, sh.getLastRow() - 1, 3).getValues().forEach(function (r) {
+    var d = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]).replace(/^'/, '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d) && Number(r[1]) > 0) out[d] = { price: Number(r[1]), source: String(r[2] || '') };
+  });
+  return out;
+}
+
+/** 여러 날짜를 한 번에 넣거나 고침 (같은 날짜는 덮어씀) */
+function upsertDiesel_(entries) {
+  if (!entries.length) return 0;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = dieselSheet_();
+    var rowOf = {};
+    if (sh.getLastRow() >= 2) {
+      sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues().forEach(function (r, i) {
+        var d = r[0] instanceof Date ? Utilities.formatDate(r[0], TZ, 'yyyy-MM-dd') : String(r[0]).replace(/^'/, '');
+        rowOf[d] = i + 2;
+      });
+    }
+    var now = now_(), add = [];
+    entries.forEach(function (e) {
+      var row = ["'" + e.date, Math.round(e.price * 100) / 100, e.source, now];
+      if (rowOf[e.date]) sh.getRange(rowOf[e.date], 1, 1, 4).setValues([row]);
+      else add.push(row);
+    });
+    if (add.length) sh.getRange(sh.getLastRow() + 1, 1, add.length, 4).setValues(add);
+    // 날짜순 정렬 (텍스트 날짜라 그대로 정렬됨)
+    if (sh.getLastRow() > 2) sh.getRange(2, 1, sh.getLastRow() - 1, 4).sort(1);
+    CacheService.getScriptCache().remove('DIESEL_TODAY');
+    return entries.length;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 오피넷 최근 7일 전국 평균 경유가 → 기록 (트리거가 매일 호출) */
+function recordDieselDaily() {
+  var key = PropertiesService.getScriptProperties().getProperty('OPINET_KEY');
+  if (!key) throw new Error('오피넷 키가 없습니다. 관리자 > API 키에서 입력하세요.');
+  var res = UrlFetchApp.fetch('https://www.opinet.co.kr/api/avgRecentPrice.do?out=json&prodcd=D047&code=' + encodeURIComponent(key), { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error('오피넷 응답 오류 (' + res.getResponseCode() + ')');
+  var oils = (JSON.parse(res.getContentText()).RESULT || {}).OIL || [];
+  var entries = oils.filter(function (o) { return !o.PRODCD || o.PRODCD === 'D047'; }).map(function (o) {
+    var d = String(o.DATE || o.TRADE_DT || '');
+    return { date: d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6, 8), price: Number(o.PRICE), source: '오피넷 전국평균' };
+  }).filter(function (e) { return /^\d{4}-\d{2}-\d{2}$/.test(e.date) && e.price > 0; });
+  if (!entries.length) throw new Error('오피넷에서 받은 경유가가 없습니다.');
+  upsertDiesel_(entries);
+  PropertiesService.getScriptProperties().setProperty('DIESEL_LAST_FETCH', Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'));
+  return entries.length;
+}
+
+/** 매일 아침 7시 자동 기록 켜기 (처음 한 번 편집기에서 실행) */
+function installDieselTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'recordDieselDaily') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('recordDieselDaily').timeBased().everyDays(1).atHour(7).inTimezone(TZ).create();
+  var n = 0;
+  try { n = recordDieselDaily(); } catch (e) { notify_('자동 기록은 켰지만 지금 조회는 실패했습니다: ' + e.message); return; }
+  notify_('유가 자동 기록을 켰습니다. 매일 아침 7시에 기록돼요. (방금 최근 ' + n + '일치를 받았습니다)');
+}
+
+function dieselTriggerOn_() {
+  try {
+    return ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'recordDieselDaily'; });
+  } catch (e) { return null; } // 권한 승인 전
+}
+
+function dieselStatus_() {
+  var h = dieselHistoryMap_(), dates = Object.keys(h).sort();
+  return {
+    count: dates.length, first: dates[0] || '', last: dates[dates.length - 1] || '',
+    lastPrice: dates.length ? h[dates[dates.length - 1]].price : null,
+    triggerOn: dieselTriggerOn_(), hasKey: !!PropertiesService.getScriptProperties().getProperty('OPINET_KEY')
+  };
+}
+
+function dieselHistory_() {
+  var h = dieselHistoryMap_();
+  return { rows: Object.keys(h).sort().map(function (d) { return [d, h[d].price, h[d].source]; }), status: dieselStatus_() };
+}
+
+/** 오피넷 사이트에서 내려받은 과거 유가 엑셀을 화면에서 읽어 보낸 것 */
+function dieselImport_(rows) {
+  var entries = (rows || []).map(function (r) { return { date: String(r[0]), price: Number(r[1]), source: '엑셀 가져오기' }; })
+    .filter(function (e) { return /^\d{4}-\d{2}-\d{2}$/.test(e.date) && e.price > 0 && e.price < 10000; });
+  if (!entries.length) throw new Error('가져올 날짜·경유가가 없습니다.');
+  return { count: upsertDiesel_(entries), status: dieselStatus_() };
+}
+
+/**
+ * 견적 계산에 쓸 경유가
+ * - 자동: 기록 중 가장 최근 날짜 값. 오늘 기록이 없으면 하루 한 번만 오피넷에서 받아 옴.
+ * - 직접: 관리자 기본값
+ */
 function dieselPrice_() {
   var s = getSettings_();
   var manual = { price: Number(s.fuel.manualPrice) || 0, source: '관리자 기본값' };
   if (s.fuel.mode !== 'auto') return manual;
-  var key = PropertiesService.getScriptProperties().getProperty('OPINET_KEY');
-  if (!key) return manual;
-
   var cache = CacheService.getScriptCache();
-  var hit = cache.get('DIESEL');
+  var hit = cache.get('DIESEL_TODAY');
   if (hit) return JSON.parse(hit);
-  try {
-    var res = UrlFetchApp.fetch('https://www.opinet.co.kr/api/avgAllPrice.do?out=json&code=' + encodeURIComponent(key), { muteHttpExceptions: true });
-    var oils = JSON.parse(res.getContentText()).RESULT.OIL;
-    var d = oils.filter(function (o) { return o.PRODCD === 'D047'; })[0];
-    var out = { price: Math.round(Number(d.PRICE)), source: '오피넷 전국평균 (' + d.TRADE_DT + ')' };
-    cache.put('DIESEL', JSON.stringify(out), 3 * 60 * 60);
-    return out;
-  } catch (e) {
-    manual.source = '관리자 기본값 (오피넷 조회 실패)';
-    return manual;
+
+  var props = PropertiesService.getScriptProperties();
+  var today = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  if (props.getProperty('OPINET_KEY') && props.getProperty('DIESEL_LAST_FETCH') !== today) {
+    try { recordDieselDaily(); } catch (e) { props.setProperty('DIESEL_LAST_FETCH', today); /* 오늘은 다시 시도하지 않음 */ }
   }
+  var h = dieselHistoryMap_(), dates = Object.keys(h).sort();
+  if (!dates.length) { manual.source = '관리자 기본값 (유가 기록 없음)'; return manual; }
+  var d = dates[dates.length - 1];
+  var out = { price: Math.round(h[d].price), source: (h[d].source || '오피넷') + ' (' + d + ')' };
+  cache.put('DIESEL_TODAY', JSON.stringify(out), 60 * 60);
+  return out;
 }
 
 /* ───────────── 도구 ───────────── */

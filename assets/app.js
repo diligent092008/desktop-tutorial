@@ -57,7 +57,7 @@
    * - 조회성 요청(READ)은 오류·지연 시 1번 자동 재시도, 같은 요청이 동시에 겹치면 하나로 합침
    * - 저장·변경 요청은 중복 실행을 막기 위해 재시도하지 않음
    */
-  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog'];
+  var READ_ACTIONS = ['me', 'publicSettings', 'dieselPrice', 'admin.bootstrap', 'admin.getSettings', 'admin.getTariff', 'admin.listUsers', 'admin.getLogs', 'admin.cacheInfo', 'history.list', 'history.get', 'quotes.list', 'quotes.get', 'analysis.index', 'analysis.load', 'analysis.accessLog', 'admin.dieselHistory'];
   var TIMEOUT_MS = 25000;
   var inflight = {};
 
@@ -270,7 +270,7 @@
 
     $$('.nav button').forEach(function (b) {
       b.onclick = function () {
-        if (state.view === 'admin' && b.dataset.view !== 'admin' && (state.admin.tariffDirty || state.admin.settingsDirty || (state.admin.anMap && state.admin.anMap.dirty)) &&
+        if (state.view === 'admin' && b.dataset.view !== 'admin' && (state.admin.tariffDirty || state.admin.settingsDirty || (state.admin.anMap && state.admin.anMap.dirty) || (state.admin.anRules && state.admin.anRules.dirty)) &&
           !confirm('저장하지 않은 관리자 변경사항이 있습니다. 이동할까요? (변경사항은 화면에 남아 있습니다)')) return;
         // 같은 메뉴를 다시 누르면 상세 화면에서 목록으로
         if (state.view === b.dataset.view) {
@@ -1258,11 +1258,11 @@
   /* ───────── 매출매입 분석: 데이터 ───────── */
   /*
    * 행 형식(서버 저장): [날짜, 매출처, 발지, 착지, 중량, 매출후불, 매입후불, 차량번호, 기사명, 차량전화, 기타1, 비고]
-   * 브라우저에서 덧붙임: [12]=사업자, [13]=표시 매출처, [14]=숨김 여부
+   * 브라우저에서 덧붙임: [12]=사업자, [13]=표시 매출처, [14]=숨김 여부, [15]=구분('' 운송 / '__x' 제외 / 분류 이름)
    */
   var AN_COLS = ['날짜', '매출처', '발지', '착지', '중량', '매출후불', '매입후불', '차량번호', '기사명', '차량전화', '기타1', '비고'];
   var AN_REQUIRED = ['날짜', '매출처', '매출후불', '매입후불'];
-  var C = { date: 0, cust: 1, from: 2, to: 3, weight: 4, sales: 5, buys: 6, car: 7, driver: 8, phone: 9, etc: 10, note: 11, biz: 12, disp: 13, hidden: 14 };
+  var C = { date: 0, cust: 1, from: 2, to: 3, weight: 4, sales: 5, buys: 6, car: 7, driver: 8, phone: 9, etc: 10, note: 11, biz: 12, disp: 13, hidden: 14, cat: 15 };
   var AN_SALES_COLOR = '#2A9DB0', AN_BUYS_COLOR = '#D2601A'; // 검증된 2색 (색약·대비 통과)
 
   function newAnState() {
@@ -1327,6 +1327,7 @@
       an.index = normAnIndex(r.index); an.businesses = r.businesses || ['조일물류', '명일로지스', '조일로지스'];
       an.mapping = {};
       (r.mapping || []).forEach(function (m) { an.mapping[m.raw] = m; });
+      an.rules = r.rules || [];
       var keys = an.index.map(function (x) { return x.key; });
       an.total = keys.length; an.loaded = 0;
       var batches = [];
@@ -1352,6 +1353,7 @@
       return Promise.all([work(), work(), work()]).then(function () {
         an.rows = rows;
         applyMapping();
+        applyRules();
         var months = anMonths();
         if (!an.f.to || months.indexOf(an.f.to) === -1) { an.f.to = months[months.length - 1] || ''; }
         if (!an.f.from || months.indexOf(an.f.from) === -1) { an.f.from = an.f.to; }
@@ -1551,6 +1553,7 @@
       api('analysis.index').then(function (r) {
         state.an.index = normAnIndex(r.index); state.an.businesses = r.businesses;
         state.an.mapping = {}; (r.mapping || []).forEach(function (m) { state.an.mapping[m.raw] = m; });
+        state.an.rules = r.rules || [];
         drawIndex(); drawFiles();
       }).catch(function (err) { var x = $('#anIdx'); if (x) x.innerHTML = '<p class="err-text">' + esc(err.message) + '</p>'; });
     }
@@ -1698,6 +1701,251 @@
     drawRows();
   }
 
+  /* ───────── 분석: 제외·분류 규칙 ───────── */
+
+  var RULE_FIELDS = [['any', '아무 칸'], ['cust', '매출처'], ['from', '발지'], ['to', '착지'], ['weight', '중량'], ['car', '차량번호'], ['driver', '기사명'], ['etc', '기타1'], ['note', '비고']];
+  var RULE_MODES = [['eq', '정확히 같음'], ['contains', '포함'], ['starts', '으로 시작']];
+  var RULE_ANY = [C.cust, C.from, C.to, C.weight, C.car, C.driver, C.etc, C.note];
+
+  function ruleMatch(rule, r) {
+    if (rule.on === false || !rule.word) return false;
+    if (rule.biz && r[C.biz] !== rule.biz) return false;
+    var w = String(rule.word).trim();
+    var test = function (v) {
+      v = String(v == null ? '' : v).trim();
+      return rule.mode === 'eq' ? v === w : rule.mode === 'starts' ? v.indexOf(w) === 0 : v.indexOf(w) !== -1;
+    };
+    if (rule.field === 'any') return RULE_ANY.some(function (i) { return test(r[i]); });
+    return test(r[C[rule.field]]);
+  }
+
+  /** 행 구분: '' = 운송, '__x' = 제외, 그 외 = 분류 이름. 위 규칙부터 먼저 걸린 것 하나만 적용 */
+  function ruleOf(rules, r) {
+    for (var i = 0; i < rules.length; i++) if (ruleMatch(rules[i], r)) return rules[i].action === 'class' ? rules[i].cat : '__x';
+    return '';
+  }
+
+  function applyRules() {
+    var an = state.an, rules = an.rules || [];
+    if (!an.rows) return;
+    for (var i = 0; i < an.rows.length; i++) an.rows[i][C.cat] = ruleOf(rules, an.rows[i]);
+    an.hasCats = rules.some(function (r) { return r.on !== false && r.action === 'class'; });
+  }
+
+  function adminAnRules() {
+    var body = $('#adminBody'), an = state.an, a = state.admin;
+    if (!an.rows) {
+      body.innerHTML = '<div class="card"><span class="spinner dark"></span> 규칙을 미리 볼 데이터를 불러오는 중… <span id="anProg" class="muted"></span></div>';
+      loadAnalysis().then(function () { if (state.view === 'admin' && a.tab === 'anrule') adminAnRules(); })
+        .catch(function (err) { body.innerHTML = '<div class="card"><p class="err-text">' + esc(err.message) + '</p></div>'; });
+      return;
+    }
+    var ed = a.anRules || (a.anRules = { rules: clone(an.rules || []), dirty: false, open: -1 });
+    body.innerHTML =
+      '<div class="card"><div class="eyebrow">Rules · 제외 · 분류 규칙</div><h2>보고에서 뺄 항목 · 따로 볼 항목</h2>' +
+      '<p class="muted small" style="margin:6px 0 14px">인건비·창고비·대여료처럼 운송 실적이 아닌 행을 <b>제외</b>하거나, <b>분류</b>(예: 부대비용)로 따로 모아 볼 수 있어요. ' +
+      '원본은 그대로 두고 보여줄 때만 적용돼서, 지난 데이터와 앞으로 올릴 데이터 모두에 똑같이 적용되고 언제든 되돌릴 수 있어요. ' +
+      '<b>위에 있는 규칙부터</b> 검사해서 처음 걸린 규칙 하나만 적용돼요. 분석 화면에는 제외 사실이 표시되지 않아요.</p>' +
+      '<div id="ruleSum" class="rule-sum"></div><div id="ruleList"></div>' +
+      '<button class="btn" id="ruleAdd" style="margin-top:12px">+ 규칙 추가</button>' +
+      '<div class="save-bar"><span class="small muted" id="ruleDirty" style="margin-right:auto"></span><button class="btn btn-accent" id="ruleSave">저장</button></div></div>';
+
+    function stats() {
+      // 규칙마다 "이 규칙 때문에" 걸린 행 (앞 규칙에 먼저 걸린 건 제외)
+      var per = ed.rules.map(function () { return { n: 0, s: 0, b: 0, rows: [] }; }), tot = { x: { n: 0, s: 0, b: 0 }, c: { n: 0, s: 0, b: 0 } };
+      an.rows.forEach(function (r) {
+        for (var i = 0; i < ed.rules.length; i++) {
+          if (ruleMatch(ed.rules[i], r)) {
+            var p = per[i]; p.n++; p.s += r[C.sales]; p.b += r[C.buys]; if (p.rows.length < 30) p.rows.push(r);
+            var t = ed.rules[i].action === 'class' ? tot.c : tot.x; t.n++; t.s += r[C.sales]; t.b += r[C.buys];
+            break;
+          }
+        }
+      });
+      return { per: per, tot: tot };
+    }
+    function draw() {
+      var st = stats();
+      $('#ruleSum').innerHTML = '<span><b>제외</b> ' + won(st.tot.x.n) + '건 · 매출 ' + won(st.tot.x.s) + ' · 매입 ' + won(st.tot.x.b) + '</span>' +
+        '<span><b>분류</b> ' + won(st.tot.c.n) + '건 · 매출 ' + won(st.tot.c.s) + ' · 매입 ' + won(st.tot.c.b) + '</span>' +
+        '<span class="muted">전체 ' + won(an.rows.length) + '건 기준 · 숨긴 매출처 포함</span>';
+      $('#ruleList').innerHTML = ed.rules.length ? ed.rules.map(function (rule, i) {
+        var p = st.per[i];
+        return '<div class="rulebox' + (rule.on === false ? ' off' : '') + '" data-i="' + i + '">' +
+          '<div class="rulerow">' +
+          '<label class="toggle" title="켜기/끄기"><input type="checkbox" data-f="on"' + (rule.on !== false ? ' checked' : '') + '><span class="track"></span></label>' +
+          '<select class="input input-sm" data-f="field">' + RULE_FIELDS.map(function (o) { return '<option value="' + o[0] + '"' + (rule.field === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+          '<span class="muted small">이(가)</span>' +
+          '<input class="input input-sm" data-f="word" value="' + esc(rule.word || '') + '" placeholder="단어 (예: 인건비)" style="min-width:150px;flex:1">' +
+          '<select class="input input-sm" data-f="mode">' + RULE_MODES.map(function (o) { return '<option value="' + o[0] + '"' + (rule.mode === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+          '<span class="muted small">이면</span>' +
+          '<select class="input input-sm" data-f="action"><option value="exclude"' + (rule.action !== 'class' ? ' selected' : '') + '>제외</option><option value="class"' + (rule.action === 'class' ? ' selected' : '') + '>분류</option></select>' +
+          (rule.action === 'class' ? '<input class="input input-sm" data-f="cat" value="' + esc(rule.cat || '') + '" placeholder="분류 이름 (예: 부대비용)" style="width:150px">' : '') +
+          '<select class="input input-sm" data-f="biz"><option value="">모든 사업자</option>' + an.businesses.map(function (b) { return '<option' + (rule.biz === b ? ' selected' : '') + '>' + esc(b) + '</option>'; }).join('') + '</select>' +
+          '<span class="rule-ctl"><button class="btn btn-ghost btn-sm" data-mv="-1" title="위로">↑</button><button class="btn btn-ghost btn-sm" data-mv="1" title="아래로">↓</button><button class="btn btn-ghost btn-sm btn-danger" data-del title="삭제">✕</button></span>' +
+          '</div>' +
+          '<div class="rulemeta"><input class="input input-sm" data-f="memo" value="' + esc(rule.memo || '') + '" placeholder="메모 (왜 빼는지)" style="flex:1;min-width:180px">' +
+          '<button class="btn btn-sm" data-peek>' + (rule.word ? '걸리는 행 <b>' + won(p.n) + '건</b> · 매출 ' + won(p.s) + ' · 매입 ' + won(p.b) : '단어를 입력하세요') + ' ' + (ed.open === i ? '▲' : '▼') + '</button></div>' +
+          (ed.open === i && p.rows.length ? '<div class="bulk-table" style="max-height:300px;margin-top:8px"><table class="data bulk"><thead><tr><th class="left">날짜</th><th class="left">사업자</th><th class="left">매출처</th><th class="left">발지</th><th class="left">착지</th><th class="left">중량</th><th>매출</th><th>매입</th><th class="left">차량번호</th><th class="left">기타1</th><th class="left">비고</th></tr></thead><tbody>' +
+            p.rows.map(function (r) { return '<tr><td class="left small">' + esc(r[C.date]) + '</td><td class="left small">' + esc(r[C.biz]) + '</td><td class="left wrap">' + esc(r[C.cust]) + '</td><td class="left wrap">' + esc(r[C.from]) + '</td><td class="left wrap">' + esc(r[C.to]) + '</td><td class="left">' + esc(r[C.weight]) + '</td><td class="num">' + won(r[C.sales]) + '</td><td class="num">' + won(r[C.buys]) + '</td><td class="left">' + esc(r[C.car]) + '</td><td class="left small wrap">' + esc(r[C.etc]) + '</td><td class="left small wrap">' + esc(r[C.note]) + '</td></tr>'; }).join('') +
+            '</tbody></table></div>' + (p.n > 30 ? '<p class="hint" style="margin:6px 0 0">앞의 30건만 보여요.</p>' : '') : '') +
+          '</div>';
+      }).join('') : '<p class="muted" style="margin:6px 0">아직 규칙이 없어요. "+ 규칙 추가"를 눌러 보세요. 예) 착지가 "인건비"와 <b>정확히 같음</b>이면 제외</p>';
+      $('#ruleDirty').innerHTML = (ed.dirty ? '<span class="dirty-dot"></span>저장하지 않은 변경사항 · ' : '') + ed.rules.length + '개 규칙';
+      bind();
+    }
+    var t;
+    function later() { clearTimeout(t); t = setTimeout(draw, 0); }
+    function bind() {
+      $$('#ruleList .rulebox').forEach(function (box) {
+        var i = Number(box.dataset.i), rule = ed.rules[i];
+        $$('[data-f]', box).forEach(function (el) {
+          var ev = el.type === 'checkbox' || el.tagName === 'SELECT' ? 'onchange' : 'onchange';
+          el[ev] = function () {
+            var f = el.dataset.f, v = el.type === 'checkbox' ? el.checked : el.value;
+            if (rule[f] === v) return;
+            rule[f] = v; ed.dirty = true;
+            if (f !== 'memo') later(); else $('#ruleDirty').innerHTML = '<span class="dirty-dot"></span>저장하지 않은 변경사항 · ' + ed.rules.length + '개 규칙';
+          };
+        });
+        $('[data-peek]', box).onclick = function () { ed.open = ed.open === i ? -1 : i; draw(); };
+        $('[data-del]', box).onclick = function () { if (!confirm('이 규칙을 삭제할까요?')) return; ed.rules.splice(i, 1); ed.dirty = true; ed.open = -1; draw(); };
+        $$('[data-mv]', box).forEach(function (b) {
+          b.onclick = function () {
+            var j = i + Number(b.dataset.mv); if (j < 0 || j >= ed.rules.length) return;
+            var tmp = ed.rules[i]; ed.rules[i] = ed.rules[j]; ed.rules[j] = tmp; ed.dirty = true; ed.open = -1; draw();
+          };
+        });
+      });
+    }
+    $('#ruleAdd').onclick = function () { ed.rules.push({ on: true, field: 'to', mode: 'eq', word: '', action: 'exclude', cat: '', biz: '', memo: '' }); ed.dirty = true; draw(); var w = $$('#ruleList [data-f="word"]'); if (w.length) w[w.length - 1].focus(); };
+    $('#ruleSave').onclick = function () {
+      var btn = this, fe = document.activeElement;
+      if (fe && fe.dataset && fe.dataset.f && fe.onchange) fe.onchange();
+      if (ed.rules.some(function (r) { return !String(r.word || '').trim(); })) return toast('단어가 비어 있는 규칙이 있어요.', 'err');
+      if (ed.rules.some(function (r) { return r.action === 'class' && !String(r.cat || '').trim(); })) return toast('분류 규칙에는 분류 이름을 넣어 주세요.', 'err');
+      busy(btn, true, '저장 중…');
+      api('analysis.saveRules', { rules: ed.rules }).then(function (r) {
+        an.rules = r.rules; ed.rules = clone(r.rules); ed.dirty = false;
+        applyRules(); toast('규칙을 저장했습니다. 분석 화면에 바로 반영돼요.'); busy(btn, false); draw();
+      }).catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+    };
+    draw();
+  }
+
+  /* ───────── 관리자: 유가 기록 ───────── */
+
+  function adminDiesel() {
+    var a = state.admin, body = $('#adminBody');
+    var dz = a.diesel || (a.diesel = { rows: null, status: null, range: 90 });
+    if (!dz.rows) {
+      body.innerHTML = '<div class="card"><span class="spinner dark"></span> 유가 기록 불러오는 중…</div>';
+      api('admin.dieselHistory').then(function (r) { dz.rows = r.rows; dz.status = r.status; if (state.view === 'admin' && a.tab === 'diesel') adminDiesel(); })
+        .catch(function (err) { body.innerHTML = '<div class="card"><p class="err-text">' + esc(err.message) + '</p></div>'; });
+      return;
+    }
+    var st = dz.status || {}, rows = dz.rows;
+    var shown = dz.range ? rows.slice(-dz.range) : rows;
+    var data = shown.map(function (r) { return { d: r[0], p: Number(r[1]) }; });
+    var prev = rows.length > 1 ? rows[rows.length - 2][1] : null, last = rows.length ? rows[rows.length - 1][1] : null;
+    var diff = last != null && prev != null ? last - prev : null;
+    body.innerHTML =
+      '<div class="card" style="margin-bottom:16px"><div class="row-between" style="flex-wrap:wrap;gap:10px"><div><div class="eyebrow">Diesel · 유가 기록</div><h2>전국 평균 경유가</h2></div>' +
+      '<div class="actions"><button class="btn btn-sm" id="dzNow"' + (st.hasKey ? '' : ' disabled') + '>지금 오피넷에서 받기</button><label class="btn btn-sm" for="dzFile">과거 유가 엑셀 가져오기</label><input type="file" id="dzFile" accept=".xlsx,.xls,.csv" hidden></div></div>' +
+      '<div class="dz-head"><div class="dz-price"><span class="num">' + (last != null ? won(Math.round(last)) : '–') + '</span><span class="small">원/L</span>' +
+      (diff != null ? '<span class="dz-diff ' + (diff > 0 ? 'up' : diff < 0 ? 'down' : '') + '">' + (diff > 0 ? '▲ ' : diff < 0 ? '▼ ' : '') + Math.abs(diff).toFixed(2) + '</span>' : '') + '</div>' +
+      '<div class="dz-meta"><span><b>마지막 기록</b> ' + esc(st.last || '없음') + '</span><span><b>기록</b> ' + won(st.count || 0) + '일' + (st.first ? ' (' + esc(st.first) + '부터)' : '') + '</span>' +
+      '<span><b>매일 자동 기록</b> ' + (st.triggerOn ? '<span class="status-pill ok">켜짐 · 매일 아침 7시</span>' : st.triggerOn === false ? '<span class="status-pill no">꺼짐</span>' : '<span class="status-pill no">권한 승인 필요</span>') + '</span>' +
+      '<span><b>오피넷 키</b> ' + (st.hasKey ? '설정됨' : '<span class="err-text">없음 (API 키 탭)</span>') + '</span></div></div>' +
+      (st.triggerOn ? '' : '<p class="notice">매일 자동 기록을 켜려면: 구글 시트 메뉴 <b>조일ver1 → 유가 자동 기록 켜기</b>를 한 번 누르세요. (또는 Apps Script 편집기에서 <code>installDieselTrigger</code> 실행) 권한 승인 창이 뜨면 허용하면 돼요.</p>') +
+      '</div>' +
+      '<div class="card" style="margin-bottom:16px"><div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:6px"><h3>추이</h3><div class="segmented" id="dzRange">' +
+      [[30, '1개월'], [90, '3개월'], [365, '1년'], [1095, '3년'], [0, '전체']].map(function (x) { return '<button type="button" data-r="' + x[0] + '" class="' + (dz.range === x[0] ? 'on' : '') + '">' + x[1] + '</button>'; }).join('') + '</div></div>' +
+      (data.length > 1 ? priceChart(data) : '<p class="muted">기록이 2일 이상 쌓이면 그래프가 보여요. 과거 유가 엑셀을 가져오면 바로 볼 수 있어요.</p>') + '</div>' +
+      '<div class="card"><h3 style="margin-bottom:10px">최근 기록</h3>' +
+      (rows.length ? '<div class="table-wrap"><table class="data"><thead><tr><th class="left">날짜</th><th>경유 (원/L)</th><th>전일 대비</th><th class="left">출처</th></tr></thead><tbody>' +
+        rows.slice(-30).reverse().map(function (r, i, arr) {
+          var pv = arr[i + 1] ? arr[i + 1][1] : null, df = pv != null ? r[1] - pv : null;
+          return '<tr><td class="left">' + esc(r[0]) + '</td><td class="num">' + Number(r[1]).toFixed(2) + '</td><td class="num ' + (df > 0 ? 'neg' : '') + '">' + (df == null ? '–' : (df > 0 ? '+' : '') + df.toFixed(2)) + '</td><td class="left small muted">' + esc(r[2]) + '</td></tr>';
+        }).join('') + '</tbody></table></div>' : '<p class="muted">아직 기록이 없어요.</p>') +
+      '<p class="hint" style="margin:10px 0 0">견적 계산의 밀크런 유류비는 경유가 "자동"일 때 이 기록의 가장 최근 값을 써요. (계산할 때마다 오피넷을 부르지 않음) · 오피넷 API는 최근 7일치만 주므로, 그보다 오래된 값은 오피넷 사이트 <b>유가통계</b>에서 엑셀로 내려받아 "과거 유가 엑셀 가져오기"로 넣어 주세요.</p></div>';
+
+    $$('#dzRange button').forEach(function (b) { b.onclick = function () { dz.range = Number(b.dataset.r); adminDiesel(); }; });
+    if (data.length > 1) bindChartHover(body.querySelectorAll('.card')[1], data, function (d) { return '<b>' + d.d + '</b><br>경유 ' + d.p.toFixed(2) + '원/L'; });
+    $('#dzNow').onclick = function () {
+      var btn = this; busy(btn, true, '받는 중…');
+      api('admin.dieselRecordNow').then(function (r) { dz.rows = r.rows; dz.status = r.status; toast('최근 7일치 경유가를 기록했어요.'); adminDiesel(); })
+        .catch(function (err) { busy(btn, false); toast(err.message, 'err'); });
+    };
+    $('#dzFile').onchange = function () {
+      var file = this.files[0]; this.value = '';
+      if (!file) return;
+      Promise.all([loadXlsx(), file.arrayBuffer()]).then(function (res) {
+        var X = res[0], wb = X.read(new Uint8Array(res[1]), { type: 'array', cellDates: true });
+        var grid = X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: '' });
+        var hi = -1, dc = -1, pc = -1;
+        for (var i = 0; i < Math.min(grid.length, 30) && hi === -1; i++) {
+          var h = grid[i].map(function (c) { return String(c).replace(/\s/g, ''); });
+          var p = h.findIndex(function (c) { return /경유/.test(c) && !/등유|실내/.test(c); });
+          if (p !== -1) { hi = i; pc = p; dc = h.findIndex(function (c) { return /날짜|일자|구분|기간|일시/.test(c); }); if (dc === -1) dc = 0; }
+        }
+        if (hi === -1) throw new Error('"경유" 열이 있는 제목 줄을 찾지 못했어요.');
+        var out = [];
+        grid.slice(hi + 1).forEach(function (r) {
+          var d = anDate(r[dc], X), v = anNum(r[pc]);
+          if (d && v > 0) out.push([d, v]);
+        });
+        if (!out.length) throw new Error('날짜와 경유가를 읽지 못했어요.');
+        if (!confirm(out.length + '일치 (' + out[0][0] + ' ~ ' + out[out.length - 1][0] + ') 경유가를 가져올까요? 같은 날짜는 덮어써요.')) return null;
+        return api('admin.dieselImport', { rows: out });
+      }).then(function (r) {
+        if (!r) return;
+        toast(r.count + '일치를 가져왔어요.'); dz.rows = null; adminDiesel();
+      }).catch(function (err) { toast(err.message, 'err'); });
+    };
+  }
+
+  /** 날짜 축 선 그래프: 7일 넘게 비어 있는 구간은 선을 끊음 */
+  function priceChart(data) {
+    var W = 760, H = 260, L = 50, R = 16, T = 14, B = 26;
+    var day = function (d) { return Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 86400000; };
+    var t0 = day(data[0].d), t1 = day(data[data.length - 1].d);
+    var vals = data.map(function (d) { return d.p; });
+    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+    var pad = Math.max(10, (hi - lo) * 0.1); lo = Math.floor((lo - pad) / 10) * 10; hi = Math.ceil((hi + pad) / 10) * 10;
+    var x = function (d) { return t1 === t0 ? (L + W - R) / 2 : L + (W - L - R) * (day(d) - t0) / (t1 - t0); };
+    var y = function (v) { return T + (H - T - B) * (1 - (v - lo) / (hi - lo)); };
+    var ticks = [0, .25, .5, .75, 1].map(function (k) { return Math.round(lo + (hi - lo) * k); });
+    var grid = ticks.map(function (t) { return '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(t) + '" y2="' + y(t) + '" class="gridl"/><text x="' + (L - 6) + '" y="' + (y(t) + 4) + '" class="axis" text-anchor="end">' + won(t) + '</text>'; }).join('');
+    var segs = [], cur = [];
+    data.forEach(function (d, i) {
+      if (i && day(d.d) - day(data[i - 1].d) > 7) { segs.push(cur); cur = []; }
+      cur.push(d);
+    });
+    segs.push(cur);
+    var lines = segs.map(function (sg) {
+      var path = sg.map(function (d, i) { return (i ? 'L' : 'M') + x(d.d).toFixed(1) + ',' + y(d.p).toFixed(1); }).join('');
+      var area = sg.length > 1 ? '<path d="' + path + 'L' + x(sg[sg.length - 1].d).toFixed(1) + ',' + y(lo) + 'L' + x(sg[0].d).toFixed(1) + ',' + y(lo) + 'Z" fill="' + AN_SALES_COLOR + '" opacity=".1"/>' : '';
+      return area + '<path d="' + path + '" fill="none" stroke="' + AN_SALES_COLOR + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+        (sg.length === 1 ? '<circle cx="' + x(sg[0].d) + '" cy="' + y(sg[0].p) + '" r="2.5" fill="' + AN_SALES_COLOR + '"/>' : '');
+    }).join('');
+    // 날짜 눈금: 기간 길이에 맞춰 6~8개
+    var labels = '', span = t1 - t0, nTicks = 7;
+    for (var k = 0; k <= nTicks; k++) {
+      var td = new Date((t0 + span * k / nTicks) * 86400000), ds = td.toISOString().slice(0, 10);
+      labels += '<text x="' + x(ds) + '" y="' + (H - 8) + '" class="axis" text-anchor="' + (k === 0 ? 'start' : k === nTicks ? 'end' : 'middle') + '">' + (span > 400 ? ds.slice(2, 7).replace('-', '.') : ds.slice(2).replace(/-/g, '.')) + '</text>';
+    }
+    var last = data[data.length - 1];
+    var hits = data.map(function (d, i) {
+      var x0 = i ? (x(data[i - 1].d) + x(d.d)) / 2 : L, x1 = i < data.length - 1 ? (x(d.d) + x(data[i + 1].d)) / 2 : W - R;
+      return '<rect class="hit" data-i="' + i + '" x="' + x0 + '" y="' + T + '" width="' + Math.max(1, x1 - x0) + '" height="' + (H - T - B) + '" fill="transparent"/>';
+    }).join('');
+    return '<div class="chartbox"><svg viewBox="0 0 ' + W + ' ' + H + '" class="chart" role="img" aria-label="전국 평균 경유가 추이">' + grid + lines +
+      '<circle cx="' + x(last.d) + '" cy="' + y(last.p) + '" r="4.5" fill="' + AN_SALES_COLOR + '" stroke="var(--panel)" stroke-width="2"/>' +
+      '<text x="' + (x(last.d) - 8) + '" y="' + (y(last.p) - 10) + '" class="vlabel" text-anchor="end">' + last.p.toFixed(2) + '</text>' +
+      labels + hits + '</svg><div class="tip hidden"></div></div>';
+  }
+
   /* ───────── 매출매입 분석 화면 ───────── */
 
   var AN_DIMS = [
@@ -1708,7 +1956,8 @@
     ['to', '착지', function (r) { return r[C.to]; }],
     ['driver', '기사명', function (r) { return r[C.driver]; }],
     ['car', '차량번호', function (r) { return r[C.car]; }],
-    ['weight', '중량', function (r) { return r[C.weight]; }]
+    ['weight', '중량', function (r) { return r[C.weight]; }],
+    ['cat', '구분', function (r) { return r[C.cat] && r[C.cat] !== '__x' ? r[C.cat] : '운송'; }]
   ];
   function dimDef(key) { return AN_DIMS.filter(function (d) { return d[0] === key; })[0]; }
 
@@ -1722,8 +1971,9 @@
   function pctText(v) { return v == null ? '–' : v.toFixed(1) + '%'; }
 
   /** 필터 적용 (excludeDim: 해당 차원 선택은 빼고 — 순위표가 선택지를 계속 보여주도록) */
-  function anFilter(excludeDim) {
+  function anFilter(excludeDim, opts) {
     var an = state.an, f = an.f, out = [];
+    var catsOnly = !!(opts && opts.catsOnly);
     var bizSet = f.biz.length ? f.biz : null;
     var sel = {};
     Object.keys(f.sel).forEach(function (k) { if (k !== excludeDim && f.sel[k] && f.sel[k].length) sel[k] = f.sel[k]; });
@@ -1733,6 +1983,12 @@
     for (var i = 0; i < an.rows.length; i++) {
       var r = an.rows[i];
       if (r[C.hidden]) continue;
+      var cat = r[C.cat];
+      if (an.showExcluded) { if (cat !== '__x') continue; }
+      else {
+        if (cat === '__x') continue;
+        if (catsOnly ? !cat : (cat && !f.withCats)) continue;
+      }
       var m = r[C.date].slice(0, 7);
       if (f.from && m < f.from) continue;
       if (f.to && m > f.to) continue;
@@ -1778,9 +2034,14 @@
         return '<button type="button" class="chip ' + (f.biz.indexOf(b) !== -1 ? 'on' : '') + '" data-b="' + esc(b) + '">' + esc(b) + '</button>';
       }).join('') + '</div></div>' +
       '<div class="fgroup"><span class="flabel">매출처</span><button class="btn btn-sm" id="anCustPick">' + ((f.sel.cust || []).length ? (f.sel.cust || []).length + '곳 선택됨' : '전체 · 고르기') + '</button></div>' +
+      (an.hasCats || state.user.role === 'admin' ? '<div class="fgroup"><span class="flabel">보기</span><div class="chips">' +
+        (an.hasCats ? '<button type="button" class="chip ' + (f.withCats ? 'on' : '') + '" id="anWithCats">분류 항목 포함</button>' : '') +
+        (state.user.role === 'admin' ? '<button type="button" class="chip ' + (an.showExcluded ? 'on' : '') + '" id="anShowX" title="관리자만 보이는 버튼">제외된 행만 보기</button>' : '') +
+        '</div></div>' : '') +
       '<div class="fgroup grow"><span class="flabel">검색</span><input class="input input-sm" id="anQ" placeholder="발지·착지·기사·차량·중량·비고에서 찾기 (Enter)" value="' + esc(f.q) + '"></div>' +
       '</div><div id="anChips" class="anchips"></div></div>' +
-      '<div id="anKpi" class="kpis"></div>' +
+      (an.showExcluded ? '<p class="notice" style="margin-top:16px">지금은 <b>제외 규칙에 걸린 행만</b> 보고 있어요. (관리자 확인용) 다시 누르면 원래대로 돌아가요.</p>' : '') +
+      '<div id="anKpi" class="kpis"></div><div id="anCats"></div>' +
       '<div class="an-charts"><div class="card" id="anTrend"></div><div class="card" id="anRate"></div></div>' +
       '<div class="card" id="anGroup" style="margin-top:16px"></div>' +
       '<div class="card" id="anDetail" style="margin-top:16px"></div>';
@@ -1798,6 +2059,8 @@
       c.onclick = function () { var i = f.biz.indexOf(c.dataset.b); if (i === -1) f.biz.push(c.dataset.b); else f.biz.splice(i, 1); refresh(); };
     });
     $('#anCustPick').onclick = openCustPicker;
+    var wc = $('#anWithCats'); if (wc) wc.onclick = function () { f.withCats = !f.withCats; refresh(); };
+    var sx = $('#anShowX'); if (sx) sx.onclick = function () { an.showExcluded = !an.showExcluded; refresh(); };
     $('#anQ').onkeydown = function (e) { if (e.key === 'Enter') { f.q = this.value.trim(); refresh(); } };
     $('#anReset').onclick = function () { f.biz = []; f.sel = {}; f.q = ''; f.to = months[months.length - 1]; f.from = f.to; an.detailPage = 0; refresh(); };
     $('#anReload').onclick = function () { an.rows = null; renderAnalysis(); };
@@ -1840,9 +2103,31 @@
       return '<div class="card kpi" style="--i:' + i + '"><div class="k">' + k[0] + '</div><div class="v num' + (k[3] ? ' neg' : '') + '">' + k[1] + '</div><div class="s">' + esc(k[2]) + '</div></div>';
     }).join('');
 
+    drawCats();
+    if (an.dim === 'cat' && !(an.hasCats && f.withCats)) an.dim = 'cust';
     drawTrend();
     drawGroup();
     drawDetail(rows);
+  }
+
+  /** 분류 규칙으로 따로 모은 항목 (분류 항목 포함을 끈 상태에서만) */
+  function drawCats() {
+    var an = state.an, box = $('#anCats');
+    if (!box) return;
+    if (!an.hasCats || an.f.withCats || an.showExcluded) { box.innerHTML = ''; return; }
+    var g = {}, t = { n: 0, s: 0, b: 0 };
+    anFilter(null, { catsOnly: true }).forEach(function (r) {
+      var x = g[r[C.cat]] || (g[r[C.cat]] = { k: r[C.cat], n: 0, s: 0, b: 0 });
+      x.n++; x.s += r[C.sales]; x.b += r[C.buys]; t.n++; t.s += r[C.sales]; t.b += r[C.buys];
+    });
+    var list = Object.keys(g).map(function (k) { return g[k]; }).sort(function (a, b) { return b.s - a.s; });
+    if (!list.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="card cats-card"><div class="row-between" style="flex-wrap:wrap;gap:8px;margin-bottom:8px"><div><div class="eyebrow">Other · 따로 분류한 항목</div><h3>위 숫자에 포함되지 않은 항목</h3></div>' +
+      '<span class="small muted">"분류 항목 포함"을 켜면 운송과 합쳐서 볼 수 있어요</span></div>' +
+      '<div class="table-wrap"><table class="data"><thead><tr><th class="left">구분</th><th>건수</th><th>매출</th><th>매입</th><th>이익</th></tr></thead><tbody>' +
+      list.map(function (x) { return '<tr><td class="left ton">' + esc(x.k) + '</td><td class="num">' + won(x.n) + '</td><td class="num">' + won(x.s) + '</td><td class="num">' + won(x.b) + '</td><td class="num' + (x.s - x.b < 0 ? ' neg' : '') + '">' + won(x.s - x.b) + '</td></tr>'; }).join('') +
+      (list.length > 1 ? '<tr class="sum"><td class="left">합계</td><td class="num">' + won(t.n) + '</td><td class="num">' + won(t.s) + '</td><td class="num">' + won(t.b) + '</td><td class="num">' + won(t.s - t.b) + '</td></tr>' : '') +
+      '</tbody></table></div></div>';
   }
 
   /** 월별 추이: 기간 필터는 무시하고 전체 월을 보여줘서 흐름을 볼 수 있게 (선택 기간은 강조) */
@@ -1971,7 +2256,7 @@
     $('#anGroup').innerHTML =
       '<div class="row-between" style="flex-wrap:wrap;gap:10px;margin-bottom:12px"><div><div class="eyebrow">Ranking · 묶어 보기</div><h3>' + esc(def[1]) + '별 순위 <span class="muted small">' + won(list.length) + '개</span></h3></div>' +
       '<div class="actions"><input class="input input-sm" id="anGQ" placeholder="' + esc(def[1]) + ' 찾기" value="' + esc(an.groupQ) + '" style="width:200px"><button class="btn btn-sm" id="anGX">엑셀</button></div></div>' +
-      '<div class="tabs-line" id="anDims">' + AN_DIMS.map(function (d) { return '<button type="button" data-d="' + d[0] + '" class="' + (d[0] === dim ? 'on' : '') + '">' + d[1] + ((f.sel[d[0]] || []).length ? ' <span class="cnt">' + f.sel[d[0]].length + '</span>' : '') + '</button>'; }).join('') + '</div>' +
+      '<div class="tabs-line" id="anDims">' + AN_DIMS.filter(function (d) { return d[0] !== 'cat' || (an.hasCats && f.withCats); }).map(function (d) { return '<button type="button" data-d="' + d[0] + '" class="' + (d[0] === dim ? 'on' : '') + '">' + d[1] + ((f.sel[d[0]] || []).length ? ' <span class="cnt">' + f.sel[d[0]].length + '</span>' : '') + '</button>'; }).join('') + '</div>' +
       '<div class="table-wrap"><table class="data grp"><thead><tr>' + th('name', esc(def[1]), true) + th('n', '건수') + th('sales', '매출') + th('buys', '매입') + th('profit', '이익') + th('rate', '이익률') + '<th class="left" style="width:18%">매출 비중</th></tr></thead><tbody>' +
       (shown.map(function (x) {
         var on = selected.indexOf(x.k) !== -1;
@@ -2100,6 +2385,8 @@
     ['users', '계정 관리', 'var(--cyan)'],
     ['andata', '분석 데이터', 'var(--green)'],
     ['anmap', '매출처 설정', 'var(--yellow)'],
+    ['anrule', '분석 규칙', 'var(--red)'],
+    ['diesel', '유가 기록', 'var(--cyan)'],
     ['keys', 'API 키', 'var(--ink-2)']
   ];
 
@@ -2145,7 +2432,7 @@
 
   function showAdminTab() {
     var a = state.admin, tab = a.tab;
-    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, keys: adminKeys, andata: adminAnData, anmap: adminAnMap };
+    var views = { basic: adminBasic, region: adminRegion, tariff: adminTariff, users: adminUsers, keys: adminKeys, andata: adminAnData, anmap: adminAnMap, anrule: adminAnRules, diesel: adminDiesel };
     var ready = a.loaded && (tab !== 'tariff' || a.tariff);
     if (ready) {
       views[tab]();
