@@ -382,8 +382,10 @@
 
   function optionsHtml() {
     var c = state.calc;
-    return '<div class="row-between" style="margin-bottom:10px"><div class="eyebrow" style="margin:0">Milk-run · 밀크런 기준</div>' +
-      '<span class="hint">' + (state.pub.roundTrip ? '왕복' : '편도') + ' 기준</span></div>' +
+    var mrOn = prefs().mr;
+    return '<div class="row-between" style="margin-bottom:10px"><div class="eyebrow" style="margin:0">Milk-run · 밀크런 (유류비·통행료)</div>' +
+      '<label class="toggle small"><input type="checkbox" id="mrOn"' + (mrOn ? ' checked' : '') + '><span class="track"></span>' + (mrOn ? (state.pub.roundTrip ? '왕복' : '편도') + ' 계산' : '계산 안 함') + '</label></div>' +
+      '<div id="mrOpts" class="' + (mrOn ? '' : 'hidden') + '">' +
       '<div class="opt-grid">' +
       '<div class="field"><label for="baseTon">기준 톤수</label><select class="input" id="baseTon">' + state.pub.tons.map(function (t) {
         return '<option' + (t === c.baseTon ? ' selected' : '') + '>' + esc(t) + '</option>';
@@ -392,6 +394,7 @@
       '</div>' +
       '<div class="field ' + (c.dieselMode === 'manual' ? '' : 'hidden') + '" id="dieselField"><input class="input num" id="dieselPrice" type="number" min="0" step="1" value="' + esc(c.dieselPrice) + '" placeholder="원/L" aria-label="경유가 원/L"><span class="hint">원/L 기준 · 밀크런 유류비 계산에만 쓰입니다</span></div>' +
       '<p class="hint ' + (c.dieselMode === 'auto' ? '' : 'hidden') + '" id="dieselHint" style="margin:-4px 0 14px">관리자 설정의 자동 조회(오피넷) 또는 기본값을 사용합니다.</p>' +
+      '</div>' + (mrOn ? '' : '<div style="height:10px"></div>') +
       '<div class="row-between" style="margin-bottom:10px"><div class="eyebrow" style="margin:0">Tonnage · 표시할 톤수</div>' +
       '<div><button type="button" class="btn btn-ghost btn-sm" id="tonAll">전체</button><button type="button" class="btn btn-ghost btn-sm" id="tonNone">해제</button></div></div>' +
       '<div class="chips" id="tonChips">' + state.pub.tons.map(function (t) {
@@ -439,6 +442,12 @@
   function bindOptions(onTonsChange) {
     var c = state.calc;
     $('#baseTon').onchange = function () { c.baseTon = this.value; };
+    $('#mrOn').onchange = function () {
+      setPref('mr', this.checked);
+      $('#mrOpts').classList.toggle('hidden', !this.checked);
+      this.nextElementSibling.nextSibling.textContent = this.checked ? (state.pub.roundTrip ? '왕복' : '편도') + ' 계산' : '계산 안 함';
+      onTonsChange();
+    };
     $('#dieselPrice').oninput = function () { c.dieselPrice = this.value; };
     $$('#dieselSeg button').forEach(function (b) {
       b.onclick = function () {
@@ -474,7 +483,7 @@
 
   function checkOptions() {
     var c = state.calc;
-    if (c.dieselMode === 'manual' && !(Number(c.dieselPrice) > 0)) { toast('경유가를 입력하세요.', 'err'); return false; }
+    if (prefs().mr && c.dieselMode === 'manual' && !(Number(c.dieselPrice) > 0)) { toast('경유가를 입력하세요.', 'err'); return false; }
     return true;
   }
 
@@ -624,6 +633,34 @@
     if (edit) return '<td class="' + c + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '><input class="adj-in adj-cell num" data-k="' + esc(k) + '" value="' + won(v) + '" inputmode="numeric"></td>';
     return '<td class="' + c + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + won(v) + '</td>';
   }
+  /** 보기 설정: 할증 칸 / 밀크런 (기억) */
+  function prefs() { var p = local('get', 'joil-prefs') || {}; return { sur: p.sur !== false, mr: p.mr !== false }; }
+  function setPref(k, v) { var p = prefs(); p[k] = v; local('set', 'joil-prefs', p); }
+  function prefToggles() {
+    var p = prefs();
+    return '<button type="button" class="chip' + (p.sur ? ' on' : '') + '" data-pref="sur">할증 칸</button>' +
+      '<button type="button" class="chip' + (p.mr ? ' on' : '') + '" data-pref="mr">밀크런</button>';
+  }
+  function bindPrefToggles(box, redraw) {
+    $$('[data-pref]', box).forEach(function (b) {
+      b.onclick = function () {
+        setPref(b.dataset.pref, !prefs()[b.dataset.pref]);
+        var sw = $('#mrOn'); // 옵션 칸의 밀크런 스위치도 맞춤
+        if (sw && b.dataset.pref === 'mr') { sw.checked = prefs().mr; $('#mrOpts').classList.toggle('hidden', !sw.checked); sw.nextElementSibling.nextSibling.textContent = sw.checked ? (state.pub.roundTrip ? '왕복' : '편도') + ' 계산' : '계산 안 함'; }
+        keepView(box, redraw);
+      };
+    });
+  }
+  /** 다시 그려도 가로 스크롤 · 화면 위치 · 입력 중인 칸을 그대로 */
+  function keepView(box, redraw) {
+    var wrap = box.querySelector('.bulk-table, .table-wrap'), sl = wrap ? wrap.scrollLeft : 0, st = wrap ? wrap.scrollTop : 0, y = window.scrollY;
+    var a = document.activeElement, key = null;
+    if (a && box.contains(a) && a.classList.contains('adj-in')) key = a.classList.contains('adj-cell') ? '.adj-cell[data-k="' + a.dataset.k + '"]' : a.classList.contains('adj-col') ? '.adj-col[data-ton="' + a.dataset.ton + '"]' : '.adj-row[data-no="' + a.dataset.no + '"]';
+    redraw();
+    var w2 = box.querySelector('.bulk-table, .table-wrap'); if (w2) { w2.scrollLeft = sl; w2.scrollTop = st; }
+    window.scrollTo(window.scrollX, y);
+    if (key) { var el = box.querySelector(key.replace(/"([^"]*)"/, function (m, v) { return '"' + (window.CSS && CSS.escape ? CSS.escape(v) : v) + '"'; })); if (el) { el.focus({ preventScroll: true }); el.select(); } }
+  }
   function adjColTag(adj, ton) { var v = adj && adj.cols && adj.cols[ton]; return v ? '<span class="adj-tag">' + signWon(v) + '</span>' : ''; }
   function adjRowTd(adj, edit, no) {
     var v = (adj && adj.rows && adj.rows[no]) || 0;
@@ -638,7 +675,8 @@
   }
   function parseWon(s) { s = String(s == null ? '' : s).replace(/[,\s원+]/g, '').replace('−', '-'); if (s === '' || s === '-') return null; var n = Math.round(Number(s)); return isFinite(n) ? n : NaN; }
   /** 조정 입력칸 연결. baseOf(no, ton) → 기본 금액 */
-  function bindAdj(box, adj, baseOf, done) {
+  function bindAdj(box, adj, baseOf, done0) {
+    var done = function (k) { setTimeout(function () { if (document.body.contains(box)) done0(k); }, 0); };
     $$('.adj-col', box).forEach(function (el) {
       el.onchange = function () { var v = parseWon(el.value); if (isNaN(v)) return toast('숫자로 입력하세요.', 'err'); if (v) adj.cols[el.dataset.ton] = v; else delete adj.cols[el.dataset.ton]; done('col'); };
     });
@@ -653,7 +691,18 @@
         done('cell');
       };
     });
-    $$('.adj-in', box).forEach(function (el) { el.onkeydown = function (e) { if (e.key === 'Enter') el.blur(); }; el.onfocus = function () { el.select(); }; });
+    $$('.adj-in', box).forEach(function (el) {
+      el.onfocus = function () { el.select(); };
+      el.onkeydown = function (e) {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        // 엑셀처럼 Enter = 아래 칸
+        var list = el.classList.contains('adj-cell') ? $$('.adj-cell', box).filter(function (x) { return x.dataset.k.split('|').slice(1).join('|') === el.dataset.k.split('|').slice(1).join('|'); })
+          : el.classList.contains('adj-row') ? $$('.adj-row', box) : $$('.adj-col', box);
+        var nx = list[list.indexOf(el) + 1];
+        if (nx) nx.focus(); else el.blur();
+      };
+    });
   }
   /** 조정 내용 요약 (기록용) */
   function adjNote(prev, next) {
@@ -692,7 +741,7 @@
   function renderSingleView(r, box, opts) {
     var rows = r.rows.filter(function (row) { return opts.tons.indexOf(row.ton) !== -1; });
     var hold = opts.hold || (opts.hold = {}), adj = adjOf(hold), edit = !!hold.adjEdit;
-    var spN = (r.specials || []).length;
+    var spN = (r.specials || []).length, pf = prefs();
     var showRow = edit || !!adj.rows[1];
     var redraw = function () { renderSingleView(r, box, Object.assign({}, opts, { animate: false })); };
     var onAdj = opts.onAdj || function () { };
@@ -721,24 +770,25 @@
       html +=
         '<div class="card" style="--i:1;margin-top:16px">' +
         '<div class="row-between" style="margin-bottom:14px;flex-wrap:wrap"><div><div class="eyebrow">Quote · 톤수별 견적</div><h3>' + rows.length + '개 톤수</h3></div>' +
-        '<div class="actions">' + adjToolbar(hold, edit) + (opts.recordId ? '<button class="btn btn-sm btn-primary" data-act="saveQuote">견적으로 저장</button>' : '') +
+        '<div class="actions">' + '<span class="chips view-tg">' + prefToggles() + '</span>' + adjToolbar(hold, edit) + (opts.recordId ? '<button class="btn btn-sm btn-primary" data-act="saveQuote">견적으로 저장</button>' : '') +
         '<button class="btn btn-sm" data-act="qdoc">견적서</button><button class="btn btn-sm" data-act="copy">회신 문구 복사</button><button class="btn btn-sm" data-act="xlsx">엑셀 저장</button></div></div>' +
         (rows.length ? '<div class="table-wrap"><table class="data qrow' + (edit ? ' adj-editing' : '') + '"><thead><tr>' +
-          '<th>거리</th><th>지역할증</th><th>하행</th>' + (spN ? '<th>특수운임</th>' : '') + rows.map(function (row) { return '<th>' + esc(row.ton) + adjColTag(adj, row.ton) + '</th>'; }).join('') + (showRow ? '<th>행 조정</th>' : '') +
-          '</tr>' + (edit ? '<tr class="adj-head"><th colspan="' + (3 + (spN ? 1 : 0)) + '" class="adj-lbl">열 조정 →</th>' + adjColInputs(adj, rows.map(function (x) { return x.ton; })) + '<th></th></tr>' : '') + '</thead><tbody><tr>' +
+          '<th>거리</th>' + rows.map(function (row) { return '<th>' + esc(row.ton) + adjColTag(adj, row.ton) + '</th>'; }).join('') + (showRow ? '<th>행 조정</th>' : '') +
+          (pf.sur ? '<th class="sur">지역할증</th><th class="sur">하행</th>' + (spN ? '<th class="sur">특수운임</th>' : '') : '') +
+          '</tr>' + (edit ? '<tr class="adj-head"><th class="adj-lbl">열 조정 →</th>' + adjColInputs(adj, rows.map(function (x) { return x.ton; })) + '<th colspan="' + ((showRow ? 1 : 0) + (pf.sur ? 2 + (spN ? 1 : 0) : 0) || 1) + '"></th></tr>' : '') + '</thead><tbody><tr>' +
           '<td class="num">' + r.distanceKm + '<span class="muted small">km</span></td>' +
-          '<td class="num" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
-          '<td class="num">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
-          (spN ? '<td class="sp-cell" title="' + esc(specialText(r, opts.tons)) + '">' + esc(specialNames(r)) + '</td>' : '') +
           rows.map(function (row) {
             return adjN(adj) || edit ? adjTd(adj, edit, 1, row.ton, row.total, 'total num') : '<td class="total"><span class="num" data-total="' + row.total + '">' + won(row.total) + '</span></td>';
           }).join('') + (showRow ? adjRowTd(adj, edit, 1) : '') +
+          (pf.sur ? '<td class="num sur" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
+            '<td class="num sur">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
+            (spN ? '<td class="sp-cell sur" title="' + esc(specialText(r, opts.tons)) + '">' + esc(specialNames(r)) + '</td>' : '') : '') +
           '</tr></tbody></table></div>' + (spN ? '<p class="hint sp-legend">특수운임 · ' + esc(specialText(r, rows.map(function (x) { return x.ton; }))) + '</p>' : '') + (edit ? '<p class="hint adj-hint">금액 칸을 고치면 그 칸만 직접 입력값으로 고정돼요 · 열 조정은 그 톤수에, 행 조정은 모든 톤수에 더해져요 (빼려면 -5000)</p>' : '')
           : '<p class="muted" style="margin:0">선택된 톤수가 없습니다. ' + esc(opts.emptyHint || '') + '</p>') +
         '<p class="hint" style="margin:14px 0 0">톤수별 금액 = 기본타리프 + 기본타리프 × 하행 + 지역할증 (금액 단위 반올림) · 유류비·통행료는 아래 밀크런에 따로 표시 · 엑셀에는 계산식이 들어갑니다</p>' +
         '</div>';
     }
-    html += '<div style="margin-top:16px">' + milkrunCard(r, 2) + '</div>';
+    if (pf.mr) html += '<div style="margin-top:16px">' + milkrunCard(r, 2) + '</div>';
 
     box.innerHTML = html;
     if (!opts.animate) $$('.card, tr', box).forEach(function (el) { el.style.animation = 'none'; });
@@ -746,8 +796,9 @@
 
     var copyBtn = $('[data-act="copy"]', box), xBtn = $('[data-act="xlsx"]', box), sBtn = $('[data-act="saveQuote"]', box);
     if (sBtn) sBtn.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: '' }, adj); };
-    bindAdjToolbar(box, hold, redraw, onAdj);
-    bindAdj(box, adj, function (no, ton) { var x = r.rows.filter(function (y) { return y.ton === ton; })[0]; return x ? x.total : 0; }, function () { onAdj(); redraw(); });
+    bindAdjToolbar(box, hold, function () { keepView(box, redraw); }, onAdj);
+    bindPrefToggles(box, redraw);
+    bindAdj(box, adj, function (no, ton) { var x = r.rows.filter(function (y) { return y.ton === ton; })[0]; return x ? x.total : 0; }, function () { onAdj(); keepView(box, redraw); });
     var qdBtn = $('[data-act="qdoc"]', box);
     if (qdBtn) qdBtn.onclick = function () {
       openQuoteDoc({ type: '단건', items: [{ no: 1, result: r }], adj: adj, tons: opts.tons, client: opts.client || '', meta: { baseTon: r.milkrun.ton, roundTrip: r.milkrun.roundTrip, diesel: { price: r.milkrun.dieselPrice } } });
@@ -1003,40 +1054,40 @@
     var mrTon = meta.baseTon || '';
     var adj = adjOf(b), edit = !!b.adjEdit && !b.running, onAdj = opts.onAdj || function () { };
     var showRow = edit || Object.keys(adj.rows).length > 0;
-    var hasSp = all.some(function (x) { return x.result && (x.result.specials || []).length; }), lead = 9 + (hasSp ? 1 : 0);
+    var hasSp = all.some(function (x) { return x.result && (x.result.specials || []).length; });
+    var pf = prefs(), nSur = pf.sur ? 2 + (hasSp ? 1 : 0) : 0, nMr = pf.mr ? 3 : 0, two = !!(nSur || nMr), rs = two ? ' rowspan="2"' : '';
 
-    var head1 = '<tr><th class="sticky c0" rowspan="2">#</th><th class="sticky c1" rowspan="2">하차지</th><th rowspan="2" class="left">상차지</th>' +
-      '<th rowspan="2">거리</th><th rowspan="2">지역할증</th><th rowspan="2">하행</th>' + (hasSp ? '<th rowspan="2">특수운임</th>' : '') +
-      '<th colspan="3" class="grp mr">밀크런 · ' + esc(mrTon) + ' ' + (opts.roundTrip ? '왕복' : '편도') + '</th>' +
-      tons.map(function (t) { return '<th rowspan="2" class="grp">' + esc(t) + adjColTag(adj, t) + '</th>'; }).join('') + (showRow ? '<th rowspan="2" class="adj-rowc">행 조정</th>' : '') + '</tr>';
-    var head2 = '<tr><th class="mr">유류비</th><th class="mr">통행료</th><th class="mr">합계</th></tr>' +
-      (edit ? '<tr class="adj-head"><th colspan="' + lead + '" class="adj-lbl">열 조정 → 그 톤수 모든 경로에 더하기 (빼려면 -5000)</th>' + adjColInputs(adj, tons) + '<th></th></tr>' : '');
-    var colCount = lead + tons.length + (showRow ? 1 : 0);
+    var head1 = '<tr><th class="sticky c0"' + rs + '>#</th><th class="sticky c1 left"' + rs + '>상차지</th><th class="sticky c2 left"' + rs + '>하차지</th><th' + rs + '>거리</th>' +
+      tons.map(function (t) { return '<th' + rs + ' class="grp">' + esc(t) + adjColTag(adj, t) + '</th>'; }).join('') + (showRow ? '<th' + rs + ' class="adj-rowc">행 조정</th>' : '') +
+      (nSur ? '<th colspan="' + nSur + '" class="grp sur">할증</th>' : '') + (nMr ? '<th colspan="3" class="grp mr">밀크런 · ' + esc(mrTon) + ' ' + (opts.roundTrip ? '왕복' : '편도') + '</th>' : '') + '</tr>';
+    var head2 = (two ? '<tr>' + (nSur ? '<th class="sur">지역</th><th class="sur">하행</th>' + (hasSp ? '<th class="sur">특수</th>' : '') : '') + (nMr ? '<th class="mr">유류비</th><th class="mr">통행료</th><th class="mr">합계</th>' : '') + '</tr>' : '') +
+      (edit ? '<tr class="adj-head' + (two ? ' r3' : ' r2') + '"><th class="sticky c0"></th><th class="sticky c1"></th><th class="sticky c2 adj-lbl">열 조정 → 그 톤수 전체에 더하기</th><th class="adj-lbl small">(빼기 -)</th>' + adjColInputs(adj, tons) + '<th colspan="' + ((showRow ? 1 : 0) + nSur + nMr || 1) + '"></th></tr>' : '');
+    var colCount = 4 + tons.length + (showRow ? 1 : 0) + nSur + nMr;
 
     var body = pageRows.map(function (row) {
       var start = '<td class="sticky c0 muted num">' + row.no + (row.added ? '<div class="added-tag" title="' + esc(row.added.at + ' · ' + row.added.by) + '">추가</div>' : '') + '</td>';
       if (row.status !== 'ok') {
-        return '<tr class="err">' + start + '<td class="sticky c1"><div class="addr-in">' + esc(row.dest) + '</div></td>' +
-          '<td class="left"><div class="addr-in">' + esc(row.origin) + '</div></td>' +
+        return '<tr class="err">' + start + '<td class="sticky c1"><div class="addr-in">' + esc(row.origin) + '</div></td>' +
+          '<td class="sticky c2"><div class="addr-in">' + esc(row.dest) + '</div></td>' +
           '<td colspan="' + (colCount - 3) + '" class="left err-msg">⚠ ' + esc(row.error || '대기 중') + '</td></tr>';
       }
       var r = row.result, m = r.milkrun;
       var byTon = {};
       r.rows.forEach(function (x) { byTon[x.ton] = x; });
       return '<tr>' + start +
-        '<td class="sticky c1"><div class="addr">' + esc(r.dest.address) + '</div>' + (r.dest.address !== row.dest ? '<div class="addr-in">' + esc(row.dest) + '</div>' : '') + '</td>' +
-        '<td class="left"><div class="addr">' + esc(r.origin.address) + '</div></td>' +
+        '<td class="sticky c1"><div class="addr">' + esc(r.origin.address) + '</div>' + (r.origin.address !== row.origin ? '<div class="addr-in">' + esc(row.origin) + '</div>' : '') + '</td>' +
+        '<td class="sticky c2"><div class="addr">' + esc(r.dest.address) + '</div>' + (r.dest.address !== row.dest ? '<div class="addr-in">' + esc(row.dest) + '</div>' : '') + '</td>' +
         '<td class="num">' + r.distanceKm + '<span class="muted small">km</span></td>' +
-        '<td class="num" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
-        '<td class="num">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
-        (hasSp ? '<td class="sp-cell small" title="' + esc(specialText(r, tons)) + '">' + ((r.specials || []).length ? esc(specialNames(r)) : '<span class="muted">–</span>') + '</td>' : '') +
-        '<td class="num mr">' + won(m.fuel) + '</td><td class="num mr">' + won(m.toll) + '</td><td class="num mr strong">' + won(m.total) + '</td>' +
         tons.map(function (t) {
           var x = byTon[t];
           if (r.overMax) return '<td class="muted small">별도 문의</td>';
           if (!x || x.total == null) return '<td>–</td>';
           return adjTd(adj, edit, row.no, t, x.total, 'num strong total-cell');
-        }).join('') + (showRow ? adjRowTd(adj, edit, row.no) : '') + '</tr>';
+        }).join('') + (showRow ? adjRowTd(adj, edit, row.no) : '') +
+        (nSur ? '<td class="num sur" title="' + esc(regionText(r)) + '">' + (r.regionTotal ? won(r.regionTotal) : '<span class="muted">–</span>') + '</td>' +
+          '<td class="num sur">' + (r.downhillApplied ? r.downhillPercent + '%' : '<span class="muted">–</span>') + '</td>' +
+          (hasSp ? '<td class="sp-cell small sur" title="' + esc(specialText(r, tons)) + '">' + ((r.specials || []).length ? esc(specialNames(r)) : '<span class="muted">–</span>') + '</td>' : '') : '') +
+        (nMr ? '<td class="num mr">' + won(m.fuel) + '</td><td class="num mr">' + won(m.toll) + '</td><td class="num mr strong">' + won(m.total) + '</td>' : '') + '</tr>';
     }).join('');
 
     box.innerHTML =
@@ -1052,6 +1103,7 @@
       '<input class="input input-sm" data-el="search" placeholder="주소 검색" value="' + esc(b.search || '') + '" style="max-width:240px">' +
       '<select class="input input-sm" data-el="sort" style="width:auto"><option value="no">입력 순서</option><option value="kmAsc">거리 가까운 순</option><option value="kmDesc">거리 먼 순</option><option value="mrDesc">밀크런 금액 큰 순</option></select>' +
       '<div class="segmented" data-el="filter"><button type="button" data-f="all" class="' + (b.filter !== 'fail' ? 'on' : '') + '">전체</button><button type="button" data-f="fail" class="' + (b.filter === 'fail' ? 'on' : '') + '">실패만</button></div>' +
+      '<div class="chips view-tg">' + prefToggles() + '</div>' +
       (!b.running && okRows.length ? '<div class="actions adj-bar">' + adjToolbar(b, edit) + '</div>' : '') +
       '</div>' + (edit ? '<p class="hint adj-hint">금액 칸을 고치면 그 칸만 직접 입력값으로 고정돼요 · 행 조정은 그 경로 모든 톤수, 열 조정은 그 톤수 모든 경로에 더해져요 · 입력 후 Enter</p>' : '') +
       (tons.length ? '' : '<p class="hint" style="margin:0 0 10px">' + esc(opts.emptyHint || '') + '</p>') +
@@ -1074,9 +1126,10 @@
     $$('.pager button', box).forEach(function (x) { x.onclick = function () { b.page = Number(x.dataset.p); again(); box.scrollIntoView({ behavior: 'smooth', block: 'start' }); }; });
     var rt = $('[data-act="retry"]', box); if (rt) rt.onclick = retryFailed;
     var sv = $('[data-act="saveQuote"]', box); if (sv) sv.onclick = function () { openSaveQuote(opts.recordId, { name: '', client: opts.client || '' }, adj); };
-    bindAdjToolbar(box, b, again, onAdj);
+    bindAdjToolbar(box, b, function () { keepView(box, again); }, onAdj);
+    bindPrefToggles(box, again);
     var byNo = {}; all.forEach(function (x) { if (x.result) byNo[x.no] = x.result; });
-    bindAdj(box, adj, function (no, ton) { var rr = byNo[no], x = rr && rr.rows.filter(function (y) { return y.ton === ton; })[0]; return x ? x.total : 0; }, function () { onAdj(); again(); });
+    bindAdj(box, adj, function (no, ton) { var rr = byNo[no], x = rr && rr.rows.filter(function (y) { return y.ton === ton; })[0]; return x ? x.total : 0; }, function () { onAdj(); keepView(box, again); });
     $('[data-act="xlsx"]', box).onclick = function () { exportBulk(this, b, opts); };
     var qd = $('[data-act="qdoc"]', box);
     if (qd) qd.onclick = function () {
@@ -3694,14 +3747,16 @@
       // 이번 결과에 쓰인 특수운임 (행마다 다를 수 있어 합쳐서 열로)
       var sps = [], spById = {};
       items.forEach(function (x) { ((x.result && x.result.specials) || []).forEach(function (sp) { if (!spById[sp.id]) { spById[sp.id] = sp; sps.push(sp); } }); });
-      var C_REGION = 5, C_DOWN = 6, C_SP = 7, C_MR = C_SP + sps.length, first = C_MR + 3;
-      var fixed = ['No', '상차지', '하차지', '거리(km)', '요금기준(km)', '지역할증', '하행'].concat(sps.map(function (sp) { return sp.name + (sp.mode === 'percent' ? ' (%)' : '') + (sp.cust ? ' · ' + sp.cust : ''); }))
-        .concat(['밀크런 유류비', '통행료', '유류비+통행료']);
+      var withMr = prefs().mr;
+      var first = 5, rowAdjCol = first + tons.length, C_REGION = rowAdjCol + 1, C_DOWN = rowAdjCol + 2, C_SP = rowAdjCol + 3, C_MR = C_SP + sps.length;
+      var lastCol = C_MR + (withMr ? 3 : 0); // 오류 열
+      var fixed = ['No', '상차지', '하차지', '거리(km)', '요금기준(km)'];
+      var tail = ['행 조정', '지역할증', '하행'].concat(sps.map(function (sp) { return sp.name + (sp.mode === 'percent' ? ' (%)' : '') + (sp.cust ? ' · ' + sp.cust : ''); }))
+        .concat(withMr ? ['밀크런 유류비', '통행료', '유류비+통행료'] : []).concat(['오류']);
       var ws = wb.addWorksheet('견적', { views: [{ state: 'frozen', xSplit: 3, ySplit: HEAD }], pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
       var wt = wb.addWorksheet(TS, { views: [{ state: 'frozen', xSplit: 3, ySplit: HEAD }], pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
-      ws.columns = [6, 34, 34, 9, 10, 11, 8].concat(sps.map(function () { return 10; })).concat([12, 11, 13]).concat(tons.map(function () { return 12; })).concat([11, 36]).map(function (w) { return { width: w }; });
+      ws.columns = [6, 34, 34, 9, 10].concat(tons.map(function () { return 12; })).concat([11, 11, 8]).concat(sps.map(function () { return 10; })).concat(withMr ? [12, 11, 13] : []).concat([36]).map(function (w) { return { width: w }; });
       wt.columns = [6, 34, 34, 10].concat(tons.map(function () { return 12; })).map(function (w) { return { width: w }; });
-      var rowAdjCol = first + tons.length, lastCol = rowAdjCol + 1; // 행 조정 열, 오류 열
       ws.mergeCells(1, 1, 1, lastCol + 1);
       ws.getCell(1, 1).value = opts.title || '운임 견적 (내부 검산용)';
       ws.getCell(1, 1).font = { size: 15, bold: true };
@@ -3712,13 +3767,13 @@
       ws.getCell(2, 1).font = { size: 9.5, color: { argb: XL.muted } };
       wt.getCell(1, 1).value = '기본 타리프 (할증 전 단가 · 견적 시트의 수식이 이 값을 씁니다)';
       wt.getCell(1, 1).font = { size: 13, bold: true };
-      var head = fixed.concat(tons).concat(['행 조정', '오류']);
+      var head = fixed.concat(tons).concat(tail);
       var lbl = ws.getCell(3, first); lbl.value = '열 조정 →'; lbl.alignment = { horizontal: 'right' }; lbl.font = { bold: true, color: { argb: XL.muted } };
       tons.forEach(function (t, i) { var c = ws.getCell(3, first + i + 1); c.value = adj.cols[t] || 0; c.numFmt = '#,##0;-#,##0;"–"'; c.fill = XL.fill(XL.note); c.border = XL.thin(); c.alignment = { horizontal: 'right' }; });
       head.forEach(function (h, i) {
         var c = ws.getCell(HEAD, i + 1);
         c.value = h; c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-        c.fill = XL.fill(i >= C_MR && i < first ? 'FF2A7D8B' : i >= C_SP && i < C_MR ? 'FF8A5A12' : XL.ink);
+        c.fill = XL.fill(i >= C_MR && i < lastCol ? 'FF2A7D8B' : i >= C_REGION && i < C_MR ? 'FF8A5A12' : XL.ink);
         c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; c.border = XL.thin();
       });
       ws.getRow(HEAD).height = 30;
@@ -3756,7 +3811,7 @@
         put(ws, C_REGION, r.regionTotal, '#,##0');
         put(ws, C_DOWN, r.downhillApplied ? r.downhillPercent / 100 : 0, '0%');
         sps.forEach(function (sp, k) { var c = put(ws, C_SP + k, mine[sp.id] ? 1 : 0, '0'); c.alignment = { horizontal: 'center' }; c.fill = XL.fill('FFFBEFD9'); });
-        [m.fuel, m.toll, m.total].forEach(function (v, i) { var c = put(ws, C_MR + i, v, '#,##0'); c.fill = XL.fill(XL.mr); });
+        if (withMr) [m.fuel, m.toll, m.total].forEach(function (v, i) { var c = put(ws, C_MR + i, v, '#,##0'); c.fill = XL.fill(XL.mr); });
         put(wt, 1, r.origin.address); put(wt, 2, r.dest.address); put(wt, 3, r.km, '#,##0');
         tons.forEach(function (t, i) {
           var x = byTon[t], col = first + i;
@@ -3902,7 +3957,7 @@
     if (src.type === '대량' && defTons.length > 4) defTons = defTons.slice(0, 4);
     var o = {
       biz: BIZ_LIST.indexOf(pref.biz) !== -1 ? pref.biz : BIZ_LIST[0], to: src.client || '', ref: '', date: today(),
-      valid: pref.valid || '견적일로부터 30일', tons: defTons, milkrun: !!pref.milkrun, vat: pref.vat !== false,
+      valid: pref.valid || '견적일로부터 30일', tons: defTons, milkrun: !!pref.milkrun && prefs().mr, vat: pref.vat !== false,
       note: pref.note != null ? pref.note : (state.pub.quoteFooter || '')
     };
     modal({
@@ -3916,7 +3971,7 @@
         '<div class="field"><label>넣을 톤수 ' + (src.type === '대량' ? '<span class="muted">(가로 폭 때문에 최대 6개)</span>' : '') + '</label><div class="chips" id="qdTons">' + allTons.map(function (t) {
           return '<button type="button" class="chip' + (o.tons.indexOf(t) !== -1 ? ' on' : '') + '" data-t="' + esc(t) + '">' + esc(t) + '</button>';
         }).join('') + '</div></div>' +
-        '<div class="field"><label class="toggle"><input type="checkbox" id="qdMr"' + (o.milkrun ? ' checked' : '') + '><span class="track"></span>밀크런 유류비 + 통행료 함께 표시 (' + esc(src.meta.baseTon || '') + ' 기준)</label></div>' +
+        '<div class="field' + (prefs().mr ? '' : ' hidden') + '"><label class="toggle"><input type="checkbox" id="qdMr"' + (o.milkrun ? ' checked' : '') + '><span class="track"></span>밀크런 유류비 + 통행료 함께 표시 (' + esc(src.meta.baseTon || '') + ' 기준)</label></div>' +
         '<div class="field"><label class="toggle"><input type="checkbox" id="qdVat"' + (o.vat ? ' checked' : '') + '><span class="track"></span>"부가세 별도" 표시</label></div>' +
         '<div class="field"><label>비고</label><textarea class="input memo" id="qdNote" maxlength="1000">' + esc(o.note) + '</textarea></div>',
       foot: '<button class="btn" data-close>취소</button><button class="btn btn-primary" id="qdGo">미리보기</button>',
